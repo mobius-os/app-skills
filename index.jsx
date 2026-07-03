@@ -118,15 +118,24 @@ function parseSkill(name, content) {
   const slug = name.replace(/\.md$/, '')
   const text = content || ''
   const lines = text.split('\n')
+  // Track fenced code blocks so a `# comment` or a fence marker INSIDE a code
+  // block is never mistaken for the title or the description.
+  const isFence = (l) => /^\s*(```|~~~)/.test(l)
   let title = ''
   let descStart = 0
+  let inFence = false
   for (let i = 0; i < lines.length; i++) {
+    if (isFence(lines[i])) { inFence = !inFence; continue }
+    if (inFence) continue
     const m = lines[i].match(/^#\s+(.+?)\s*$/)
     if (m) { title = m[1].trim(); descStart = i + 1; break }
   }
   if (!title) title = slug.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
   let description = ''
+  inFence = false
   for (let i = descStart; i < lines.length; i++) {
+    if (isFence(lines[i])) { inFence = !inFence; if (description) break; else continue }
+    if (inFence) continue
     const l = lines[i].trim()
     if (!l) { if (description) break; else continue }
     if (/^#{1,6}\s/.test(l) || l === '---') { if (description) break; else continue }

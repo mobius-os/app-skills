@@ -1,18 +1,27 @@
 {
   "id": "skills",
   "name": "Skills",
-  "version": "1.0.0",
-  "description": "Browse and search your agent's skills — the SKILL.md guides that shape what it can do. Tap any skill to read it. Create or edit through the agent.",
+  "version": "1.0.1",
+  "description": "Browse and search your agent's skills \u2014 the SKILL.md guides that shape what it can do. Tap any skill to read it. Create or edit through the agent.",
   "author": "mobius-os",
   "license": "MIT",
   "homepage": "https://github.com/mobius-os/app-skills",
   "entry": "index.jsx",
   "icon": "icon.png",
   "offline_capable": false,
-  "permissions": { "cross_app_access": "read", "share_with_apps": "none" },
+  "permissions": {
+    "cross_app_access": "none",
+    "share_with_apps": "none"
+  },
   "runtime": {
-    "imports": ["react", "react-dom"],
-    "esm_deps": ["marked", "dompurify"]
+    "imports": [
+      "react",
+      "react-dom"
+    ],
+    "esm_deps": [
+      "marked",
+      "dompurify"
+    ]
   },
   "offline": {
     "reads": false,
