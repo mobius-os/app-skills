@@ -28,7 +28,7 @@ const CSS = `
   background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .sk-title { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.015em; }
 .sk-subtitle { display: block; margin-top: 1px; font-size: 12px; color: var(--muted); }
-.sk-iconbtn { flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center;
+.sk-iconbtn { flex: 0 0 auto; width: 44px; height: 44px; display: inline-flex; align-items: center;
   justify-content: center; border-radius: 10px; border: 1px solid var(--border); background: var(--surface);
   color: var(--text); cursor: pointer; transition: background .14s ease, transform .1s ease; }
 .sk-iconbtn:active { transform: scale(0.94); }
@@ -43,7 +43,7 @@ const CSS = `
 .sk-search { position: relative; display: flex; align-items: center; }
 .sk-search svg { position: absolute; left: 12px; width: 17px; height: 17px; color: var(--muted); pointer-events: none; }
 .sk-input { width: 100%; box-sizing: border-box; min-height: 44px; padding: 11px 14px 11px 38px;
-  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
   outline: none; font-family: var(--font); font-size: 16px; }
 .sk-input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 
@@ -77,7 +77,7 @@ const CSS = `
 .sk-empty-text { margin: 0; font-size: 14px; line-height: 1.6; max-width: 30ch; }
 .sk-spinner { width: 26px; height: 26px; border-radius: 50%; border: 2.5px solid var(--border);
   border-top-color: var(--accent); animation: sk-spin 0.8s linear infinite; }
-.sk-retry { margin-top: 6px; min-height: 40px; padding: 9px 18px; border-radius: 10px; border: 1px solid var(--border);
+.sk-retry { margin-top: 6px; min-height: 44px; padding: 10px 18px; border-radius: 10px; border: 1px solid var(--border);
   background: var(--surface); color: var(--text); font-weight: 600; font-size: 14px; cursor: pointer; }
 
 /* mobius-ui:SyncPill v2 — keep in sync; library candidate. SILENT WHEN HEALTHY:
@@ -93,7 +93,7 @@ const CSS = `
 /* detail */
 .sk-detail-head { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px;
   padding: 12px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
-.sk-back { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 40px; padding: 6px 12px 6px 8px;
+.sk-back { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 8px 12px 8px 8px;
   border-radius: 10px; border: none; background: none; color: var(--accent); font-family: var(--font);
   font-size: 15px; font-weight: 600; cursor: pointer; }
 .sk-back svg { width: 20px; height: 20px; }
@@ -119,6 +119,27 @@ const CSS = `
 .sk-md th { background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 650; }
 .sk-md hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 .sk-md img { max-width: 100%; }
+
+/* mobius-ui:Focus v1 — keep in sync; library candidate. Required once per app.
+   A visible keyboard-focus ring on every interactive control (WCAG 2.4.7).
+   :focus-visible only shows for keyboard nav, so mouse/touch taps stay clean. */
+:where(button, a, input, textarea, select, summary, [role="button"],
+       [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* /mobius-ui:Focus */
+
+/* mobius-ui:ReducedMotion v1 — keep in sync; library candidate. Required once per app. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+/* /mobius-ui:ReducedMotion */
 `
 
 const HAMMER = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 12-8.5 8.5a2.12 2.12 0 1 1-3-3L12 9"/><path d="M17.64 15 22 10.64"/><path d="m20.91 11.7-1.25-1.25c-.6-.6-.93-1.4-.93-2.25v-.86L16.01 4.6a5.56 5.56 0 0 0-3.94-1.64H9l.92.82A6.18 6.18 0 0 1 12 8.4v1.56l2 2h.86c.85 0 1.65.34 2.25.93l1.25 1.25"/></svg>
