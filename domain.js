@@ -78,3 +78,48 @@ export function friendlyLoadError(err) {
   }
   return raw || 'Something went wrong loading skills.'
 }
+
+// Manages the shell back-sentinel lifecycle for ONE detail level and closes the
+// double-tap-during-pending-push race. A handle from nav.open is only a LIVE
+// sentinel once its `.ready` resolves; until then a second open() must not
+// render detail (there is no sentinel yet to pop) nor stack a second handle —
+// it retargets the in-flight open, which renders whatever key was requested
+// last once its handle resolves. On a rejected push the entire pending state is
+// cleared so a retargeted second tap can never leave detail open with no
+// sentinel. onShow(key) opens or swaps detail content; onClose() returns to the
+// list; getNavOpen() resolves window.mobius.nav.open at call time (the runtime
+// may not be present at mount). Pure of React — unit-testable on its own.
+export function createDetailNav({ getNavOpen, label, onShow, onClose }) {
+  let handle = null
+  let ready = false
+  let pending = null
+  function reset() { handle = null; ready = false; pending = null }
+
+  async function open(key) {
+    if (handle && ready) { onShow(key); return }          // detail open — swap content
+    if (handle) { pending = key; return }                 // push in flight — retarget only
+    const navOpen = typeof getNavOpen === 'function' ? getNavOpen() : null
+    if (typeof navOpen !== 'function') { onShow(key); return } // no shell nav — open directly
+    let h
+    try { h = navOpen(label, () => { reset(); onClose() }) } catch { h = null }
+    if (!h) { onShow(key); return }
+    handle = h; ready = false; pending = key
+    try {
+      await h.ready
+    } catch {
+      if (handle === h) reset()                            // rejected — drop ALL pending state
+      return
+    }
+    if (handle !== h) return                               // superseded by another open/close
+    ready = true
+    onShow(pending || key)                                 // render the LATEST requested key
+  }
+
+  function close() {
+    try { handle && handle.close && handle.close() } catch {}
+    reset()
+    onClose()
+  }
+
+  return { open, close, isOpen: () => handle != null }
+}

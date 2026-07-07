@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { parseSkill, classifyLink, friendlyLoadError } from './domain.js'
+import { parseSkill, classifyLink, friendlyLoadError, createDetailNav } from './domain.js'
 
 // Skills — a read-only browser for the agent's skills (the SKILL-style
 // markdown files under /data/shared/skills). Inspired by the Skills screen in
@@ -156,7 +156,20 @@ export default function SkillsApp({ appId, token }) {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(null) // slug of open skill
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
-  const navRef = useRef(null)
+  // The detail back-sentinel state machine (in domain.js so it is unit-testable
+  // — the double-tap-during-pending-push race can't be exercised through the
+  // React component alone). Created once; onShow/onClose close over the stable
+  // setState + signal, getNavOpen resolves the runtime handle at call time.
+  const detailNavRef = useRef(null)
+  if (!detailNavRef.current) {
+    detailNavRef.current = createDetailNav({
+      label: 'skill-detail',
+      getNavOpen: () => window.mobius?.nav?.open,
+      onShow: (slug) => { setSelected(slug); window.mobius?.signal?.('item_opened', { type: 'skill', slug }) },
+      onClose: () => setSelected(null),
+    })
+  }
+  const detailNav = detailNavRef.current
   const readySignalledRef = useRef(false) // gate app_ready to the first successful load
 
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token])
@@ -217,44 +230,10 @@ export default function SkillsApp({ appId, token }) {
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off) }
   }, [])
 
-  function showSkill(slug) {
-    setSelected(slug)
-    window.mobius?.signal?.('item_opened', { type: 'skill', slug })
-  }
-
-  // Android/browser back for the detail drill-down. Follows building-apps.md's
-  // await-ready protocol: install the back sentinel, await handle.ready, and
-  // only render detail if this handle is still the current one. On rejection we
-  // clear navRef and stay on the list rather than opening a sentinel-less detail.
-  async function openSkill(slug) {
-    // Already inside a detail view with a live handle (e.g. a cross-link tap):
-    // just swap content — one push/pop pair per detail level, no stacked sentinel.
-    if (navRef.current) { showSkill(slug); return }
-    const navOpen = window.mobius?.nav?.open
-    if (typeof navOpen === 'function') {
-      let handle
-      try { handle = navOpen('skill-detail', () => { navRef.current = null; setSelected(null) }) } catch { handle = null }
-      if (handle) {
-        navRef.current = handle
-        try {
-          await handle.ready
-        } catch {
-          if (navRef.current === handle) navRef.current = null
-          return // shell rejected the push; stay on the list
-        }
-        if (navRef.current !== handle) return // superseded by another open/close
-        showSkill(slug)
-        return
-      }
-    }
-    showSkill(slug) // no nav available — open directly
-  }
-
-  function closeSkill() {
-    try { navRef.current?.close?.() } catch {}
-    navRef.current = null
-    setSelected(null)
-  }
+  // Open (or cross-link-swap) a skill detail through the await-ready state
+  // machine. All the sentinel lifecycle + race handling lives in detailNav.
+  const openSkill = (slug) => detailNav.open(slug)
+  const closeSkill = () => detailNav.close()
 
   // If a refresh drops the currently-open skill, close the detail so we don't
   // leak the nav sentinel (a later device back would otherwise be consumed).
