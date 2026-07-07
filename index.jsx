@@ -21,7 +21,7 @@ const CSS = `
 
 /* mobius-ui:Header v1 — keep in sync; library candidate. */
 .sk-header { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; min-height: 48px;
-  padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  padding: max(12px, env(safe-area-inset-top)) 16px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .sk-brand { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
 .sk-mark { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px; display: flex;
   align-items: center; justify-content: center; font-size: 16px;
@@ -92,7 +92,7 @@ const CSS = `
 
 /* detail */
 .sk-detail-head { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px;
-  padding: 12px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  padding: max(12px, env(safe-area-inset-top)) 12px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .sk-back { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 8px 12px 8px 8px;
   border-radius: 10px; border: none; background: none; color: var(--accent); font-family: var(--font);
   font-size: 15px; font-weight: 600; cursor: pointer; }
@@ -149,13 +149,19 @@ const CHEV = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWi
 const BACK = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
 const PLUS = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
 
+function initialOnline() {
+  if (typeof window !== 'undefined' && typeof window.mobius?.online === 'boolean') return window.mobius.online
+  if (typeof navigator !== 'undefined') return navigator.onLine
+  return true
+}
+
 export default function SkillsApp({ appId, token }) {
   const [skills, setSkills] = useState(null) // null = never loaded; [] or [..] = last-known-good
   const [loadError, setLoadError] = useState(null) // user-facing copy for the latest failed load
   const [refreshing, setRefreshing] = useState(false)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(null) // slug of open skill
-  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
+  const [online, setOnline] = useState(initialOnline)
   // The detail back-sentinel state machine (in domain.js so it is unit-testable
   // — the double-tap-during-pending-push race can't be exercised through the
   // React component alone). Created once; onShow/onClose close over the stable
@@ -222,6 +228,10 @@ export default function SkillsApp({ appId, token }) {
 
   // Track connectivity for the Offline pill (silent-sync: pill only when offline).
   useEffect(() => {
+    if (typeof window.mobius?.onOnlineChange === 'function') {
+      return window.mobius.onOnlineChange((next) => setOnline(!!next))
+    }
+    // Runtime fallback: standalone/older shells may expose only browser events.
     const on = () => setOnline(true)
     const off = () => setOnline(false)
     window.addEventListener('online', on)
