@@ -198,7 +198,7 @@ export default function SkillsApp({ appId, token }) {
 
   function showSkill(slug) {
     setSelected(slug)
-    window.mobius?.signal?.('item_opened', { type: 'skill' })
+    window.mobius?.signal?.('item_opened', { type: 'skill', slug })
   }
 
   // Android/browser back for the detail drill-down. Follows building-apps.md's
@@ -304,7 +304,10 @@ export default function SkillsApp({ appId, token }) {
         <div className="sk-detail-head">
           <button className="sk-back" onClick={closeSkill} aria-label="Back to skills">{BACK}<span>Skills</span></button>
           <div className="sk-detail-title">{current.title}</div>
-          <button className="sk-iconbtn" onClick={() => askAgent(`Help me edit the "${current.slug}" skill. Here's what I want to change: `)} aria-label="Edit skill with the agent">{PLUS}</button>
+          <button className="sk-iconbtn" onClick={() => {
+            window.mobius?.signal?.('edit_requested', { type: 'skill', slug: current.slug })
+            askAgent(`Help me edit the "${current.slug}" skill. Here's what I want to change: `)
+          }} aria-label="Edit skill with the agent">{PLUS}</button>
         </div>
         <div className="sk-scroll">
           {current.unavailable ? (
@@ -368,7 +371,10 @@ export default function SkillsApp({ appId, token }) {
             <div className="sk-empty-mark" aria-hidden="true">{HAMMER}</div>
             <div className="sk-empty-title">No skills yet</div>
             <p className="sk-empty-text">Skills extend what your agent can do. Ask the agent to create one and it’ll appear here.</p>
-            <button className="sk-retry" onClick={() => askAgent('Create a new skill for me. It should: ')}>Ask the agent</button>
+            <button className="sk-retry" onClick={() => {
+              window.mobius?.signal?.('item_created', { type: 'skill' })
+              askAgent('Create a new skill for me. It should: ')
+            }}>Ask the agent</button>
           </div>
         )}
 
