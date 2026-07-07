@@ -1,12 +1,16 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { parseSkill, classifyLink, friendlyLoadError } from './domain.js'
 
 // Skills — a read-only browser for the agent's skills (the SKILL-style
 // markdown files under /data/shared/skills). Inspired by the Skills screen in
 // Hermex. Skills are shared, owner-authored context; a mini-app can READ shared
 // storage with its scoped token but not WRITE it, so creating/editing a skill
 // is routed to the Möbius agent via a new chat rather than an in-app save.
+//
+// The pure parsing + link-classification logic lives in ./domain.js so it can
+// be unit-tested without bundling react/marked/dompurify (see test/).
 
 const CSS = `
 /* mobius-ui:Root v1 — keep in sync; library candidate. */
@@ -58,6 +62,8 @@ const CSS = `
 .sk-rowslug { font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 1px; }
 .sk-rowdesc { margin-top: 4px; font-size: 13.5px; line-height: 1.5; color: var(--muted);
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.sk-rowtag { display: inline-block; margin-top: 5px; font-size: 11px; font-weight: 600; color: var(--danger);
+  padding: 1px 7px; border-radius: 999px; border: 1px solid var(--danger); }
 .sk-chev { flex: 0 0 auto; align-self: center; color: var(--muted); opacity: 0.6; }
 .sk-chev svg { width: 18px; height: 18px; }
 
@@ -73,6 +79,16 @@ const CSS = `
   border-top-color: var(--accent); animation: sk-spin 0.8s linear infinite; }
 .sk-retry { margin-top: 6px; min-height: 40px; padding: 9px 18px; border-radius: 10px; border: 1px solid var(--border);
   background: var(--surface); color: var(--text); font-weight: 600; font-size: 14px; cursor: pointer; }
+
+/* mobius-ui:SyncPill v2 — keep in sync; library candidate. SILENT WHEN HEALTHY:
+   not mounted while online (never "Saving" / pending counts); plain "Offline"
+   when offline; .is-error only for a failure the owner can act on. */
+.sk-sync-pill { position: absolute; right: 12px; bottom: 12px; z-index: 40;
+  display: inline-flex; align-items: center; padding: 6px 12px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+  font-size: 11px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
+.sk-sync-pill.is-error { border-color: var(--danger); color: var(--danger); }
+/* /mobius-ui:SyncPill */
 
 /* detail */
 .sk-detail-head { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px;
@@ -112,51 +128,22 @@ const CHEV = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWi
 const BACK = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
 const PLUS = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
 
-// Parse a skill's markdown into a display title + one-line description.
-// Skill files are "# Title\n\n<description paragraph>..." with no frontmatter.
-function parseSkill(name, content) {
-  const slug = name.replace(/\.md$/, '')
-  const text = content || ''
-  const lines = text.split('\n')
-  // Track fenced code blocks so a `# comment` or a fence marker INSIDE a code
-  // block is never mistaken for the title or the description.
-  const isFence = (l) => /^\s*(```|~~~)/.test(l)
-  let title = ''
-  let descStart = 0
-  let inFence = false
-  for (let i = 0; i < lines.length; i++) {
-    if (isFence(lines[i])) { inFence = !inFence; continue }
-    if (inFence) continue
-    const m = lines[i].match(/^#\s+(.+?)\s*$/)
-    if (m) { title = m[1].trim(); descStart = i + 1; break }
-  }
-  if (!title) title = slug.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-  let description = ''
-  inFence = false
-  for (let i = descStart; i < lines.length; i++) {
-    if (isFence(lines[i])) { inFence = !inFence; if (description) break; else continue }
-    if (inFence) continue
-    const l = lines[i].trim()
-    if (!l) { if (description) break; else continue }
-    if (/^#{1,6}\s/.test(l) || l === '---') { if (description) break; else continue }
-    description += (description ? ' ' : '') + l
-    if (description.length > 240) break
-  }
-  return { slug, name, title, description: description.trim(), content: text }
-}
-
 export default function SkillsApp({ appId, token }) {
-  const [skills, setSkills] = useState(null) // null = loading, [] = loaded-empty
-  const [error, setError] = useState(null)
+  const [skills, setSkills] = useState(null) // null = never loaded; [] or [..] = last-known-good
+  const [loadError, setLoadError] = useState(null) // user-facing copy for the latest failed load
   const [refreshing, setRefreshing] = useState(false)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(null) // slug of open skill
+  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
   const navRef = useRef(null)
+  const readySignalledRef = useRef(false) // gate app_ready to the first successful load
 
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token])
 
-  async function load() {
-    setError(null)
+  // A failed refresh must NOT wipe the already-loaded list. load() keeps the
+  // last-known-good `skills` on failure and only records `loadError`; the full
+  // error empty state is reserved for the very first load (skills === null).
+  async function load({ isRefresh = false } = {}) {
     try {
       const res = await fetch('/api/storage/shared-list/skills/', { headers: authHeaders })
       if (!res.ok) throw new Error(`list ${res.status}`)
@@ -165,17 +152,29 @@ export default function SkillsApp({ appId, token }) {
       const parsed = await Promise.all(files.map(async (e) => {
         try {
           const r = await fetch(`/api/storage/shared/skills/${encodeURIComponent(e.name)}`, { headers: authHeaders })
-          const md = r.ok ? await r.text() : ''
-          return parseSkill(e.name, md)
-        } catch { return parseSkill(e.name, '') }
+          if (!r.ok) {
+            // A per-file failure used to render a blank skill and emit nothing,
+            // so a corrupt/permission-broken file looked intentionally empty.
+            window.mobius?.signal?.('error', { message: `skill ${e.name} ${r.status}`, source: 'skill_load', status: r.status })
+            return { ...parseSkill(e.name, ''), unavailable: true }
+          }
+          return parseSkill(e.name, await r.text())
+        } catch (err) {
+          window.mobius?.signal?.('error', { message: String(err?.message || err), source: 'skill_load', status: 0 })
+          return { ...parseSkill(e.name, ''), unavailable: true }
+        }
       }))
       parsed.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()))
       setSkills(parsed)
-      window.mobius?.signal?.('app_ready', { item_count: parsed.length })
+      setLoadError(null)
+      if (!readySignalledRef.current) {
+        readySignalledRef.current = true
+        window.mobius?.signal?.('app_ready', { item_count: parsed.length })
+      }
     } catch (err) {
-      setError(err.message || 'Could not load skills')
-      setSkills([])
-      window.mobius?.signal?.('error', { message: String(err.message || err), source: 'load' })
+      setLoadError(friendlyLoadError(err))
+      window.mobius?.signal?.('error', { message: String(err?.message || err), source: isRefresh ? 'refresh' : 'load' })
+      // Keep the last-known-good list intact; on the first load skills stays null.
     }
   }
 
@@ -183,29 +182,92 @@ export default function SkillsApp({ appId, token }) {
 
   async function refresh() {
     setRefreshing(true)
-    await load()
+    await load({ isRefresh: true })
     setRefreshing(false)
   }
 
-  // Android/browser back for the detail drill-down.
-  function openSkill(slug) {
-    if (window.mobius?.nav?.open) {
-      try {
-        const handle = window.mobius.nav.open('skill-detail', () => { navRef.current = null; setSelected(null) })
-        navRef.current = handle
-      } catch { /* nav is best-effort */ }
-    }
+  // Track connectivity for the Offline pill (silent-sync: pill only when offline).
+  useEffect(() => {
+    const on = () => setOnline(true)
+    const off = () => setOnline(false)
+    window.addEventListener('online', on)
+    window.addEventListener('offline', off)
+    if (typeof window.mobius?.online === 'boolean') setOnline(window.mobius.online)
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off) }
+  }, [])
+
+  function showSkill(slug) {
     setSelected(slug)
     window.mobius?.signal?.('item_opened', { type: 'skill' })
   }
+
+  // Android/browser back for the detail drill-down. Follows building-apps.md's
+  // await-ready protocol: install the back sentinel, await handle.ready, and
+  // only render detail if this handle is still the current one. On rejection we
+  // clear navRef and stay on the list rather than opening a sentinel-less detail.
+  async function openSkill(slug) {
+    // Already inside a detail view with a live handle (e.g. a cross-link tap):
+    // just swap content — one push/pop pair per detail level, no stacked sentinel.
+    if (navRef.current) { showSkill(slug); return }
+    const navOpen = window.mobius?.nav?.open
+    if (typeof navOpen === 'function') {
+      let handle
+      try { handle = navOpen('skill-detail', () => { navRef.current = null; setSelected(null) }) } catch { handle = null }
+      if (handle) {
+        navRef.current = handle
+        try {
+          await handle.ready
+        } catch {
+          if (navRef.current === handle) navRef.current = null
+          return // shell rejected the push; stay on the list
+        }
+        if (navRef.current !== handle) return // superseded by another open/close
+        showSkill(slug)
+        return
+      }
+    }
+    showSkill(slug) // no nav available — open directly
+  }
+
   function closeSkill() {
     try { navRef.current?.close?.() } catch {}
     navRef.current = null
     setSelected(null)
   }
 
+  // If a refresh drops the currently-open skill, close the detail so we don't
+  // leak the nav sentinel (a later device back would otherwise be consumed).
+  useEffect(() => {
+    if (selected && skills && !skills.some((s) => s.slug === selected)) closeSkill()
+  }, [selected, skills])
+
   function askAgent(draft) {
     window.parent.postMessage({ type: 'moebius:new-chat', draft }, window.location.origin)
+  }
+
+  // Keep the app mounted when a link is tapped inside a rendered skill.
+  function onDetailClick(e) {
+    const a = e.target.closest && e.target.closest('a')
+    if (!a) return
+    const link = classifyLink(a.getAttribute('href'))
+    if (link.kind === 'anchor') return // in-page fragment — harmless, leave default
+    if (link.kind === 'skill') {
+      e.preventDefault()
+      if (skills && skills.some((s) => s.slug === link.slug)) {
+        openSkill(link.slug)
+      } else {
+        window.mobius?.signal?.('error', { message: `unknown skill link ${link.slug}`, source: 'skill_link' })
+      }
+      return
+    }
+    if (link.kind === 'external') {
+      e.preventDefault()
+      window.open(link.url, '_blank', 'noopener,noreferrer')
+      return
+    }
+    // Unsupported protocol or sub-path: block the navigation, keep the app up.
+    e.preventDefault()
+    window.mobius?.signal?.('error', { message: `blocked link (${link.reason})`, source: 'skill_link' })
   }
 
   const filtered = useMemo(() => {
@@ -218,32 +280,54 @@ export default function SkillsApp({ appId, token }) {
 
   const current = selected && skills ? skills.find((s) => s.slug === selected) : null
   const detailHtml = useMemo(() => {
-    if (!current) return ''
-    try { return DOMPurify.sanitize(marked.parse(current.content || '')) } catch { return '' }
+    if (!current || current.unavailable) return ''
+    try {
+      return DOMPurify.sanitize(marked.parse(current.content || ''))
+    } catch (err) {
+      window.mobius?.signal?.('error', { message: String(err?.message || err), source: 'markdown_render' })
+      return ''
+    }
   }, [current])
+
+  const syncPill = !online
+    ? <div className="sk-sync-pill" role="status">Offline</div>
+    : (loadError && skills)
+      ? <div className="sk-sync-pill is-error" role="status">Couldn’t refresh</div>
+      : null
 
   // ---- Detail view ----
   if (current) {
     return (
       <div className="sk-root">
         <style>{CSS}</style>
+        {syncPill}
         <div className="sk-detail-head">
           <button className="sk-back" onClick={closeSkill} aria-label="Back to skills">{BACK}<span>Skills</span></button>
           <div className="sk-detail-title">{current.title}</div>
           <button className="sk-iconbtn" onClick={() => askAgent(`Help me edit the "${current.slug}" skill. Here's what I want to change: `)} aria-label="Edit skill with the agent">{PLUS}</button>
         </div>
         <div className="sk-scroll">
-          <div className="sk-md" dangerouslySetInnerHTML={{ __html: detailHtml }} />
+          {current.unavailable ? (
+            <div className="sk-empty">
+              <div className="sk-empty-mark" aria-hidden="true">⚠️</div>
+              <div className="sk-empty-title">Couldn’t load this skill</div>
+              <p className="sk-empty-text">The file for “{current.slug}” couldn’t be read. Try refreshing, or ask the agent to check it.</p>
+            </div>
+          ) : (
+            <div className="sk-md" onClick={onDetailClick} dangerouslySetInnerHTML={{ __html: detailHtml }} />
+          )}
         </div>
       </div>
     )
   }
 
   // ---- List view ----
-  const loading = skills === null
+  const loading = skills === null && !loadError
+  const initialError = skills === null && loadError
   return (
     <div className="sk-root">
       <style>{CSS}</style>
+      {syncPill}
       <header className="sk-header">
         <div className="sk-brand">
           <span className="sk-mark" aria-hidden="true">{HAMMER}</span>
@@ -256,7 +340,7 @@ export default function SkillsApp({ appId, token }) {
       </header>
 
       <div className="sk-scroll">
-        {!loading && !error && (
+        {skills !== null && skills.length > 0 && (
           <div className="sk-searchwrap">
             <div className="sk-search">
               {SEARCH}
@@ -270,16 +354,16 @@ export default function SkillsApp({ appId, token }) {
           <div className="sk-empty"><div className="sk-spinner" /><div className="sk-empty-title">Loading skills…</div></div>
         )}
 
-        {!loading && error && (
+        {initialError && (
           <div className="sk-empty">
             <div className="sk-empty-mark" aria-hidden="true">⚠️</div>
             <div className="sk-empty-title">Couldn’t load skills</div>
-            <p className="sk-empty-text">{error}</p>
+            <p className="sk-empty-text">{loadError}</p>
             <button className="sk-retry" onClick={refresh}>Try again</button>
           </div>
         )}
 
-        {!loading && !error && filtered.length === 0 && skills.length === 0 && (
+        {skills !== null && skills.length === 0 && (
           <div className="sk-empty">
             <div className="sk-empty-mark" aria-hidden="true">{HAMMER}</div>
             <div className="sk-empty-title">No skills yet</div>
@@ -288,7 +372,7 @@ export default function SkillsApp({ appId, token }) {
           </div>
         )}
 
-        {!loading && !error && filtered.length === 0 && skills.length > 0 && (
+        {skills !== null && skills.length > 0 && filtered.length === 0 && (
           <div className="sk-empty">
             <div className="sk-empty-mark" aria-hidden="true">{SEARCH}</div>
             <div className="sk-empty-title">No matches</div>
@@ -296,7 +380,7 @@ export default function SkillsApp({ appId, token }) {
           </div>
         )}
 
-        {!loading && !error && filtered.length > 0 && (
+        {skills !== null && filtered.length > 0 && (
           <div className="sk-list">
             {filtered.map((s) => (
               <button key={s.slug} className="sk-row" onClick={() => openSkill(s.slug)}>
@@ -304,7 +388,9 @@ export default function SkillsApp({ appId, token }) {
                 <span className="sk-rowbody">
                   <div className="sk-rowname">{s.title}</div>
                   <div className="sk-rowslug">{s.slug}</div>
-                  {s.description && <div className="sk-rowdesc">{s.description}</div>}
+                  {s.unavailable
+                    ? <div className="sk-rowtag">Unavailable</div>
+                    : (s.description && <div className="sk-rowdesc">{s.description}</div>)}
                 </span>
                 <span className="sk-chev" aria-hidden="true">{CHEV}</span>
               </button>
