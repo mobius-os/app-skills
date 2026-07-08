@@ -81,14 +81,20 @@ export function friendlyLoadError(err) {
 
 // Manages the shell back-sentinel lifecycle for ONE detail level and closes the
 // double-tap-during-pending-push race. A handle from nav.open is only a LIVE
-// sentinel once its `.ready` resolves; until then a second open() must not
+// sentinel once its `.ready` resolves TRUE; until then a second open() must not
 // render detail (there is no sentinel yet to pop) nor stack a second handle —
 // it retargets the in-flight open, which renders whatever key was requested
-// last once its handle resolves. On a rejected push the entire pending state is
-// cleared so a retargeted second tap can never leave detail open with no
-// sentinel. onShow(key) opens or swaps detail content; onClose() returns to the
-// list; getNavOpen() resolves window.mobius.nav.open at call time (the runtime
-// may not be present at mount). Pure of React — unit-testable on its own.
+// last once its handle resolves. onShow(key) opens or swaps detail content;
+// onClose() returns to the list; getNavOpen() resolves window.mobius.nav.open at
+// call time (the runtime may not be present at mount). Pure of React.
+//
+// The nav contract (locked by mobius-runtime's own tests): `handle.ready`
+// RESOLVES to true (shell owns the back target) or false (push refused / timed
+// out) — it does NOT reject. On false we still show the content (blocking the
+// detail on a refused back target is worse UX), but we DROP our handle so
+// close()/isOpen() never claim to own a sentinel the shell doesn't have, and no
+// phantom nav-pop is sent. (An older runtime with no `.ready` resolves
+// undefined → treated as owned, best-effort.)
 export function createDetailNav({ getNavOpen, label, onShow, onClose }) {
   let handle = null
   let ready = false
@@ -104,15 +110,21 @@ export function createDetailNav({ getNavOpen, label, onShow, onClose }) {
     try { h = navOpen(label, () => { reset(); onClose() }) } catch { h = null }
     if (!h) { onShow(key); return }
     handle = h; ready = false; pending = key
-    try {
-      await h.ready
-    } catch {
-      if (handle === h) reset()                            // rejected — drop ALL pending state
+    // ready resolves true/false; a defensive catch only guards a broken runtime
+    // that throws (treated as "not owned"), never the normal refused-push path.
+    let owned
+    try { owned = await h.ready } catch { owned = false }
+    if (handle !== h) return                               // superseded by another open/close
+    const key2 = pending || key
+    if (owned === false) {
+      // Shell refused the back target: show the content but own NO sentinel, so
+      // close()/isOpen() stay honest and device back falls through to the shell.
+      reset()
+      onShow(key2)
       return
     }
-    if (handle !== h) return                               // superseded by another open/close
     ready = true
-    onShow(pending || key)                                 // render the LATEST requested key
+    onShow(key2)                                           // render the LATEST requested key
   }
 
   function close() {
