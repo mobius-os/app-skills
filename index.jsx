@@ -26,6 +26,7 @@ const CSS = `
 .sk-mark { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px; display: flex;
   align-items: center; justify-content: center; font-size: 16px;
   background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.sk-mark img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; display: block; }
 .sk-title { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.015em; }
 .sk-subtitle { display: block; margin-top: 1px; font-size: 12px; color: var(--muted); }
 .sk-iconbtn { flex: 0 0 auto; width: 44px; height: 44px; display: inline-flex; align-items: center;
@@ -343,7 +344,9 @@ export default function SkillsApp({ appId, token }) {
       {syncPill}
       <header className="sk-header">
         <div className="sk-brand">
-          <span className="sk-mark" aria-hidden="true">{HAMMER}</span>
+          <span className="sk-mark">
+            {appId ? <img src={`/api/apps/${appId}/icon?size=64`} alt="" /> : null}
+          </span>
           <div>
             <h1 className="sk-title">Skills</h1>
             <span className="sk-subtitle">{skills ? `${skills.length} agent ${skills.length === 1 ? 'skill' : 'skills'}` : 'Your agent’s abilities'}</span>
