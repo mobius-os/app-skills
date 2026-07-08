@@ -23,10 +23,12 @@ const CSS = `
 .sk-header { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; min-height: 48px;
   padding: max(12px, env(safe-area-inset-top)) 16px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .sk-brand { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
-.sk-mark { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px; display: flex;
-  align-items: center; justify-content: center; font-size: 16px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.sk-mark { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px; display: flex;
+  align-items: center; justify-content: center; overflow: hidden; color: var(--accent); }
 .sk-mark img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; display: block; }
+.sk-mark-fallback { width: 34px; height: 34px; border-radius: 8px; display: none;
+  align-items: center; justify-content: center; font-size: 32px; font-weight: 700; line-height: 1;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 .sk-title { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.015em; }
 .sk-subtitle { display: block; margin-top: 1px; font-size: 12px; color: var(--muted); }
 .sk-iconbtn { flex: 0 0 auto; width: 44px; height: 44px; display: inline-flex; align-items: center;
@@ -345,7 +347,20 @@ export default function SkillsApp({ appId, token }) {
       <header className="sk-header">
         <div className="sk-brand">
           <span className="sk-mark">
-            {appId ? <img src={`/api/apps/${appId}/icon?size=64`} alt="" /> : null}
+            {appId ? (
+              <img
+                src={`/api/apps/${appId}/icon?size=64`}
+                alt=""
+                width={34}
+                height={34}
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none'
+                  const f = e.currentTarget.nextElementSibling
+                  if (f) f.style.display = 'flex'
+                }}
+              />
+            ) : null}
+            <span className="sk-mark-fallback" aria-hidden="true">·</span>
           </span>
           <div>
             <h1 className="sk-title">Skills</h1>
