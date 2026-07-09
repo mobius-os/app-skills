@@ -15,9 +15,26 @@ import { parseSkill, classifyLink, friendlyLoadError, createDetailNav } from './
 const CSS = `
 /* mobius-ui:Root v1 — keep in sync; library candidate. */
 .sk-root { position: relative; display: flex; flex-direction: column; height: 100%;
-  overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font); }
-.sk-scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  width: 100%; max-width: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font);
+  -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+.sk-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
 /* /mobius-ui:Root */
+
+/* mobius-ui:Scrollskin v2 — keep in sync; hidden by default, content stays scrollable. */
+.sk-scroll,
+.sk-md pre,
+.sk-md table {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sk-scroll::-webkit-scrollbar,
+.sk-md pre::-webkit-scrollbar,
+.sk-md table::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+/* /mobius-ui:Scrollskin */
 
 /* mobius-ui:Header v1 — keep in sync; library candidate. */
 .sk-header { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; min-height: 48px;
@@ -29,7 +46,7 @@ const CSS = `
 .sk-mark-fallback { width: 34px; height: 34px; border-radius: 8px; display: none;
   align-items: center; justify-content: center; font-size: 32px; font-weight: 700; line-height: 1;
   background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
-.sk-title { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.015em; }
+.sk-title { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: 0; }
 .sk-subtitle { display: block; margin-top: 1px; font-size: 12px; color: var(--muted); }
 .sk-iconbtn { flex: 0 0 auto; width: 44px; height: 44px; display: inline-flex; align-items: center;
   justify-content: center; border-radius: 10px; border: 1px solid var(--border); background: var(--surface);
@@ -46,9 +63,11 @@ const CSS = `
 .sk-search { position: relative; display: flex; align-items: center; }
 .sk-search svg { position: absolute; left: 12px; width: 17px; height: 17px; color: var(--muted); pointer-events: none; }
 .sk-input { width: 100%; box-sizing: border-box; min-height: 44px; padding: 11px 14px 11px 38px;
-  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
-  outline: none; font-family: var(--font); font-size: 16px; }
-.sk-input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px;
+  outline: none; font-family: var(--font); font-size: 16px;
+  transition: border-color .15s ease, box-shadow .15s ease; }
+.sk-input:focus,
+.sk-input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
 
 /* list */
 .sk-list { display: flex; flex-direction: column; padding: 4px 12px 32px; }
@@ -61,7 +80,7 @@ const CSS = `
   align-items: center; justify-content: center; font-size: 18px;
   background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .sk-rowbody { flex: 1; min-width: 0; }
-.sk-rowname { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; word-break: break-word; }
+.sk-rowname { font-size: 16px; font-weight: 650; letter-spacing: 0; word-break: break-word; }
 .sk-rowslug { font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 1px; }
 .sk-rowdesc { margin-top: 4px; font-size: 13.5px; line-height: 1.5; color: var(--muted);
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -81,7 +100,7 @@ const CSS = `
 .sk-spinner { width: 26px; height: 26px; border-radius: 50%; border: 2.5px solid var(--border);
   border-top-color: var(--accent); animation: sk-spin 0.8s linear infinite; }
 .sk-retry { margin-top: 6px; min-height: 44px; padding: 10px 18px; border-radius: 10px; border: 1px solid var(--border);
-  background: var(--surface); color: var(--text); font-weight: 600; font-size: 14px; cursor: pointer; }
+  background: var(--surface); color: var(--text); font-weight: 500; font-size: 14px; cursor: pointer; }
 
 /* mobius-ui:SyncPill v2 — keep in sync; library candidate. SILENT WHEN HEALTHY:
    not mounted while online (never "Saving" / pending counts); plain "Offline"
@@ -98,12 +117,12 @@ const CSS = `
   padding: max(12px, env(safe-area-inset-top)) 12px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .sk-back { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 8px 12px 8px 8px;
   border-radius: 10px; border: none; background: none; color: var(--accent); font-family: var(--font);
-  font-size: 15px; font-weight: 600; cursor: pointer; }
+  font-size: 15px; font-weight: 500; cursor: pointer; }
 .sk-back svg { width: 20px; height: 20px; }
 .sk-detail-title { font-size: 16px; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; flex: 1; }
 .sk-md { padding: 18px 18px 48px; font-size: 15px; line-height: 1.65; max-width: 720px; margin: 0 auto; }
-.sk-md h1 { font-size: 22px; font-weight: 750; letter-spacing: -0.02em; margin: 4px 0 12px; }
+.sk-md h1 { font-size: 22px; font-weight: 750; letter-spacing: 0; margin: 4px 0 12px; }
 .sk-md h2 { font-size: 18px; font-weight: 700; margin: 26px 0 10px; padding-top: 6px; border-top: 1px solid var(--border-light, var(--border)); }
 .sk-md h3 { font-size: 15.5px; font-weight: 700; margin: 20px 0 8px; }
 .sk-md p { margin: 0 0 12px; }
@@ -115,8 +134,8 @@ const CSS = `
 .sk-md pre { background: var(--surface2, var(--surface)); border: 1px solid var(--border); border-radius: 10px;
   padding: 12px 14px; overflow-x: auto; margin: 0 0 14px; }
 .sk-md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.55; }
-.sk-md blockquote { margin: 0 0 12px; padding: 2px 14px; border-left: 3px solid var(--accent);
-  color: var(--muted); }
+.sk-md blockquote { margin: 0 0 12px; padding: 10px 14px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--muted); }
 .sk-md table { border-collapse: collapse; width: 100%; margin: 0 0 14px; font-size: 13.5px; display: block; overflow-x: auto; }
 .sk-md th, .sk-md td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; }
 .sk-md th { background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 650; }

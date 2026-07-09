@@ -1,7 +1,7 @@
 {
   "id": "skills",
   "name": "Skills",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Browse and search your agent's skills \u2014 the SKILL.md guides that shape what it can do. Tap any skill to read it. Create or edit through the agent.",
   "author": "mobius-os",
   "license": "MIT",

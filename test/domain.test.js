@@ -38,6 +38,28 @@ test('parseSkill: empty content still yields a slug-derived title and empty desc
   assert.equal(s.description, '')
 })
 
+test('parseSkill: strips frontmatter from rendered content', () => {
+  const md = [
+    '---',
+    'name: impeccable',
+    'description: Improve frontend interfaces.',
+    '---',
+    '# impeccable',
+    '',
+    'Use this skill for product UI polish.',
+  ].join('\n')
+  const s = parseSkill('impeccable.md', md)
+  assert.equal(s.title, 'impeccable')
+  assert.equal(s.description, 'Use this skill for product UI polish.')
+  assert.equal(s.content, '# impeccable\n\nUse this skill for product UI polish.')
+})
+
+test('parseSkill: uses frontmatter description as fallback only when body has none', () => {
+  const s = parseSkill('quiet-mode.md', '---\nname: quiet-mode\ndescription: Calm the interface.\n---\n# Quiet Mode')
+  assert.equal(s.title, 'Quiet Mode')
+  assert.equal(s.description, 'Calm the interface.')
+})
+
 test('classifyLink: same-folder .md link resolves to a skill slug', () => {
   assert.deepEqual(classifyLink('app-component-shapes.md'), { kind: 'skill', slug: 'app-component-shapes' })
 })

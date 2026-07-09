@@ -22,13 +22,15 @@ below), never written from the app.
 
 ## Skill markdown shape
 
-Skill files have no frontmatter. `parseSkill()` reads:
+Skill files may be plain markdown or include a small YAML frontmatter block.
+`parseSkill()` strips frontmatter from the rendered detail and reads:
 
 - **Title** — the first `# Heading` outside any fenced code block. If a file has
-  no `#` heading, the title falls back to a Title-Cased version of the slug
-  (filename without `.md`).
+  no `#` heading, the title falls back to `name` from frontmatter, then to a
+  Title-Cased version of the slug (filename without `.md`).
 - **Description** — the first non-empty paragraph after the title, up to ~240
-  chars, stopping at the next heading, `---`, or a fenced code block.
+  chars, stopping at the next heading, `---`, or a fenced code block. If the
+  body has no paragraph, `description` from frontmatter is used as a fallback.
 
 Fenced code blocks (``` ``` ``` or `~~~`) are tracked so a `# comment` or a
 fence marker *inside* a code block is never mistaken for the title or the

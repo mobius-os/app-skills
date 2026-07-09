@@ -3,13 +3,31 @@
 // Keeping the parsing and link-classification logic here means they can be
 // unit-tested without bundling react/marked/dompurify.
 
+function splitFrontmatter(content) {
+  const text = content || ''
+  const lines = text.split(/\r?\n/)
+  if (lines[0]?.trim() !== '---') return { body: text, meta: {} }
+  const meta = {}
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') {
+      const body = lines.slice(i + 1).join('\n').replace(/^\n+/, '')
+      return { body, meta }
+    }
+    const m = lines[i].match(/^([A-Za-z0-9_-]+):\s*(.*?)\s*$/)
+    if (m) meta[m[1].toLowerCase()] = m[2].replace(/^["']|["']$/g, '').trim()
+  }
+  return { body: text, meta: {} }
+}
+
 // Parse a skill's markdown into a display title + one-line description.
-// Skill files are "# Title\n\n<description paragraph>..." with no frontmatter.
+// Skill files are usually "# Title\n\n<description paragraph>...", but
+// installed Codex skills may carry YAML frontmatter. Strip that metadata from
+// the rendered body so the detail view reads like documentation, not a raw file.
 // Fenced code blocks are tracked so a `# comment` or a fence marker INSIDE a
 // code block is never mistaken for the title or the description.
 export function parseSkill(name, content) {
   const slug = name.replace(/\.md$/, '')
-  const text = content || ''
+  const { body: text, meta } = splitFrontmatter(content)
   const lines = text.split('\n')
   const isFence = (l) => /^\s*(```|~~~)/.test(l)
   let title = ''
@@ -21,7 +39,7 @@ export function parseSkill(name, content) {
     const m = lines[i].match(/^#\s+(.+?)\s*$/)
     if (m) { title = m[1].trim(); descStart = i + 1; break }
   }
-  if (!title) title = slug.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  if (!title) title = meta.name || slug.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
   let description = ''
   inFence = false
   for (let i = descStart; i < lines.length; i++) {
@@ -33,7 +51,13 @@ export function parseSkill(name, content) {
     description += (description ? ' ' : '') + l
     if (description.length > 240) break
   }
-  return { slug, name, title, description: description.trim(), content: text }
+  return {
+    slug,
+    name,
+    title,
+    description: description.trim() || meta.description || '',
+    content: text,
+  }
 }
 
 // Classify a link tapped inside a rendered skill so the detail view never lets
