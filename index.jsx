@@ -310,6 +310,21 @@ export default function SkillsApp({ appId, token }) {
       s.title.toLowerCase().includes(q) || s.slug.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
   }, [skills, query])
 
+  // Search analytics for Reflection: emit once per settled query (debounced so a
+  // single search isn't counted once per keystroke). Payload is counts only —
+  // never the raw term, which is free-text owner input. Depend on `query` alone
+  // so a background refresh (new skills → new filtered) doesn't re-fire; filtered
+  // is read at fire time and is already current for this query.
+  useEffect(() => {
+    const q = query.trim()
+    if (!q) return
+    const t = setTimeout(() => {
+      window.mobius?.signal?.('search_performed', { query_length: q.length, result_count: filtered.length })
+      if (filtered.length === 0) window.mobius?.signal?.('search_no_results', { query_length: q.length })
+    }, 500)
+    return () => clearTimeout(t)
+  }, [query])
+
   const current = selected && skills ? skills.find((s) => s.slug === selected) : null
   const detailHtml = useMemo(() => {
     if (!current || current.unavailable) return ''
