@@ -20,6 +20,14 @@ const CSS = `
 .sk-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
 /* /mobius-ui:Root */
 
+/* mobius-ui:Page — app-owned; a future-library candidate (no sync owed).
+   Reading column: the scroll owns the full-bleed scrollbar; this caps the CONTENT.
+   Full-bleed on phones, centered at 720px (matches the .sk-md detail cap) on wide
+   viewports so list and detail agree. */
+.sk-page { width: 100%; }
+@media (min-width: 760px) { .sk-page { max-width: 720px; margin-inline: auto; } }
+/* /mobius-ui:Page */
+
 /* mobius-ui:Scrollskin v2 — keep in sync; hidden by default, content stays scrollable. */
 .sk-scroll,
 .sk-md pre,
@@ -405,6 +413,7 @@ export default function SkillsApp({ appId, token }) {
       </header>
 
       <div className="sk-scroll">
+        <div className="sk-page">
         {skills !== null && skills.length > 0 && (
           <div className="sk-searchwrap">
             <div className="sk-search">
@@ -465,6 +474,7 @@ export default function SkillsApp({ appId, token }) {
             ))}
           </div>
         )}
+        </div>
       </div>
     </div>
   )
