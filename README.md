@@ -9,7 +9,7 @@ can do. It enumerates the shared skills folder, parses each file's title and
 one-line description, searches locally, and renders the selected skill as
 sanitized markdown. Creating and editing a skill is routed to the agent (see
 below), never written from the app.
-Installed system apps that add always-on instructions are listed below the editable skills so their effect on new chats is visible. Existing chats keep the prompt they started with.
+Installed system apps that add always-on instructions are listed below the editable skills so their effect is visible. Those instructions apply for as long as the app stays installed; start a new chat after installing or uninstalling one to be sure the agent is working from the latest set.
 
 ## File layout
 

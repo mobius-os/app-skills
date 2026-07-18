@@ -517,8 +517,8 @@ export default function SkillsApp({ appId, token }) {
 
         {skills !== null && systemPromptApps.length > 0 && (
           <section className="sk-system-apps" aria-labelledby="system-prompt-apps-title">
-            <h2 className="sk-section-title" id="system-prompt-apps-title">Apps that guide new chats</h2>
-            <p className="sk-section-copy">These installed apps add always-on instructions to new chats. Uninstalling an app removes its instructions from future chats; existing chats keep the prompt they started with.</p>
+            <h2 className="sk-section-title" id="system-prompt-apps-title">Apps that extend the agent</h2>
+            <p className="sk-section-copy">These installed apps add always-on instructions to the agent for as long as they stay installed. Start a new chat after installing or uninstalling one to be sure the agent is working from the latest set.</p>
             <div className="sk-app-list">
               {systemPromptApps.map((app) => {
                 const displayName = installedAppDisplayName(app)
