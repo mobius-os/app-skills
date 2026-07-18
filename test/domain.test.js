@@ -1,9 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseSkill, classifyLink, selectSystemPromptApps, friendlyLoadError } from '../domain.js'
+import {
+  parseSkill,
+  classifyLink,
+  selectSystemPromptApps,
+  fetchSystemPromptApps,
+  createSystemPromptAppsLoader,
+  installedAppDisplayName,
+  friendlyLoadError,
+} from '../domain.js'
 
-// Regression tests for the pure core. Portable: no absolute paths, no install,
-// discovered by `node --test` on a fresh clone.
+// Regression tests for the dependency-free core. Portable: no absolute paths,
+// no install, discovered by `node --test` on a fresh clone.
 
 test('parseSkill: title from first heading, description from first paragraph', () => {
   const s = parseSkill('building-apps.md', '# Building mini-apps\n\nThe full mini-app contract.\n\nMore text here.')
@@ -116,4 +124,72 @@ test('selectSystemPromptApps: keeps only true system apps with a prompt file and
 test('selectSystemPromptApps: malformed API payloads are safely empty', () => {
   assert.deepEqual(selectSystemPromptApps(null), [])
   assert.deepEqual(selectSystemPromptApps({ apps: [] }), [])
+})
+
+test('fetchSystemPromptApps: HTTP, fetch, and malformed JSON failures degrade to an empty section', async () => {
+  const cases = [
+    async () => ({ ok: false, status: 500 }),
+    async () => { throw new Error('network down') },
+    async () => ({ ok: true, json: async () => { throw new SyntaxError('bad JSON') } }),
+    async () => ({ ok: true, json: async () => ({ apps: [] }) }),
+  ]
+
+  for (const fetchImpl of cases) {
+    assert.deepEqual(await fetchSystemPromptApps(fetchImpl, { Authorization: 'Bearer test' }), [])
+  }
+})
+
+test('fetchSystemPromptApps: an empty apps response omits the supplemental section', async () => {
+  const fetchImpl = async () => ({ ok: true, json: async () => [] })
+  assert.deepEqual(await fetchSystemPromptApps(fetchImpl, {}), [])
+})
+
+test('system prompt apps loader: a slow apps response cannot block the primary skills flow', async () => {
+  let resolveApps
+  const pendingApps = new Promise((resolve) => { resolveApps = resolve })
+  const committed = []
+  const loader = createSystemPromptAppsLoader({
+    fetchImpl: async () => ({ ok: true, json: () => pendingApps }),
+    onApps: (apps) => committed.push(apps),
+  })
+
+  const startResult = loader.load({})
+  const skills = await Promise.resolve(['Rendered skill'])
+  assert.equal(startResult, undefined, 'supplemental load is intentionally fire-and-forget')
+  assert.deepEqual(skills, ['Rendered skill'])
+  assert.deepEqual(committed, [], 'the apps request is still pending')
+
+  resolveApps([])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(committed, [[]])
+})
+
+test('system prompt apps loader: only the latest overlapping request may commit', async () => {
+  let resolveOlder
+  let resolveNewer
+  const older = new Promise((resolve) => { resolveOlder = resolve })
+  const newer = new Promise((resolve) => { resolveNewer = resolve })
+  let request = 0
+  const committed = []
+  const loader = createSystemPromptAppsLoader({
+    fetchImpl: async () => ({ ok: true, json: () => (request++ === 0 ? older : newer) }),
+    onApps: (apps) => committed.push(apps.map((app) => app.name)),
+  })
+
+  loader.load({})
+  loader.load({})
+  resolveNewer([{ id: 2, name: 'Newer', system_app: true, system_prompt_file: 'newer.md' }])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(committed, [['Newer']])
+
+  resolveOlder([{ id: 1, name: 'Older', system_app: true, system_prompt_file: 'older.md' }])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(committed, [['Newer']], 'the stale response cannot overwrite the latest state')
+})
+
+test('installedAppDisplayName: trims name, then falls back to slug and neutral copy', () => {
+  assert.equal(installedAppDisplayName({ name: '  Memory  ', slug: 'memory' }), 'Memory')
+  assert.equal(installedAppDisplayName({ name: '   ', slug: '  legacy-app  ' }), 'legacy-app')
+  assert.equal(installedAppDisplayName({ name: '', slug: '' }), 'Installed app')
+  assert.equal(installedAppDisplayName(null), 'Installed app')
 })

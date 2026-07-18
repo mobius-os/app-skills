@@ -1,7 +1,7 @@
-// Pure, dependency-free helpers for the Skills app — no React, no I/O, no DOM.
-// This is the testable core (see test/domain.test.js); index.jsx imports it.
-// Keeping the parsing and link-classification logic here means they can be
-// unit-tested without bundling react/marked/dompurify.
+// Dependency-free helpers for the Skills app — no React or DOM. This is the
+// testable core (see test/domain.test.js); index.jsx imports it. Network I/O is
+// accepted only as an injected function, so parsing and load coordination can
+// be unit-tested without bundling react/marked/dompurify.
 
 function splitFrontmatter(content) {
   const text = content || ''
@@ -99,6 +99,46 @@ export function selectSystemPromptApps(apps) {
   return apps
     .filter((app) => app?.system_app === true && Boolean(app.system_prompt_file))
     .sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()))
+}
+
+// Supplemental app data must never participate in the primary skills error or
+// loading flow. Every HTTP, JSON, and payload-shape failure therefore degrades
+// to an empty section.
+export async function fetchSystemPromptApps(fetchImpl, headers) {
+  try {
+    const res = await fetchImpl('/api/apps/', { headers })
+    if (!res?.ok) return []
+    return selectSystemPromptApps(await res.json())
+  } catch {
+    return []
+  }
+}
+
+// Starts supplemental app requests without returning their promise, so a slow
+// request cannot accidentally prolong the primary skills load/Refresh state.
+// Only the newest generation may commit, preventing an older response from
+// overwriting a newer refresh. invalidate() also prevents commits after unmount.
+export function createSystemPromptAppsLoader({ fetchImpl, onApps }) {
+  let generation = 0
+
+  function load(headers) {
+    const requestGeneration = ++generation
+    void fetchSystemPromptApps(fetchImpl, headers).then((apps) => {
+      if (requestGeneration === generation) onApps(apps)
+    })
+  }
+
+  function invalidate() {
+    generation += 1
+  }
+
+  return { load, invalidate }
+}
+
+export function installedAppDisplayName(app) {
+  const name = typeof app?.name === 'string' ? app.name.trim() : ''
+  const slug = typeof app?.slug === 'string' ? app.slug.trim() : ''
+  return name || slug || 'Installed app'
 }
 
 // Turn a developer-facing fetch error into copy the owner can act on.

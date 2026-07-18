@@ -9,14 +9,14 @@ can do. It enumerates the shared skills folder, parses each file's title and
 one-line description, searches locally, and renders the selected skill as
 sanitized markdown. Creating and editing a skill is routed to the agent (see
 below), never written from the app.
-Installed system apps that add an always-on instruction block are listed below the editable skills so their effect on every chat is visible.
+Installed system apps that add always-on instructions are listed below the editable skills so their effect on new chats is visible. Existing chats keep the prompt they started with.
 
 ## File layout
 
 | File | Role |
 |------|------|
 | `index.jsx` | Default-export React component: the list, search, detail view, and all UI/state. |
-| `domain.js` | Pure, dependency-free core — `parseSkill`, `classifyLink`, `friendlyLoadError`. No React, no I/O, so it's unit-testable. |
+| `domain.js` | Dependency-free core for parsing, link classification, errors, and supplemental-app load coordination. Network access is injected, so it is unit-testable without React or the DOM. |
 | `test/domain.test.js` | Regression tests for `domain.js` (run with `npm test` → `node --test`). |
 | `mobius.json` | App manifest (id, permissions, runtime deps, offline contract). |
 | `icon.png` | App icon. |

@@ -1,7 +1,14 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { parseSkill, classifyLink, selectSystemPromptApps, friendlyLoadError, createDetailNav } from './domain.js'
+import {
+  parseSkill,
+  classifyLink,
+  friendlyLoadError,
+  createDetailNav,
+  createSystemPromptAppsLoader,
+  installedAppDisplayName,
+} from './domain.js'
 
 // Skills — a read-only browser for the agent's skills (the SKILL-style
 // markdown files under /data/shared/skills). Inspired by the Skills screen in
@@ -112,7 +119,8 @@ const CSS = `
 .sk-app-icon img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .sk-app-icon-fallback { display: none; width: 100%; height: 100%; align-items: center; justify-content: center;
   color: var(--accent); font-size: 17px; font-weight: 700; }
-.sk-app-note { margin-top: 3px; color: var(--muted); font-size: 13.5px; line-height: 1.4; }
+.sk-app-note { margin-top: 3px; color: var(--muted); font-size: 13.5px; line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 /* empty / status */
 .sk-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
@@ -225,6 +233,13 @@ export default function SkillsApp({ appId, token }) {
   }
   const detailNav = detailNavRef.current
   const readySignalledRef = useRef(false) // gate app_ready to the first successful load
+  const systemPromptAppsLoaderRef = useRef(null)
+  if (!systemPromptAppsLoaderRef.current) {
+    systemPromptAppsLoaderRef.current = createSystemPromptAppsLoader({
+      fetchImpl: (...args) => fetch(...args),
+      onApps: setSystemPromptApps,
+    })
+  }
 
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token])
 
@@ -232,16 +247,10 @@ export default function SkillsApp({ appId, token }) {
   // last-known-good `skills` on failure and only records `loadError`; the full
   // error empty state is reserved for the very first load (skills === null).
   async function load({ isRefresh = false } = {}) {
-    // Apps are supplemental: resolve every failure to an empty list so this
-    // request can never alter or block the primary skills-list error flow.
-    const appsRequest = (async () => {
-      try {
-        const res = await fetch('/api/apps/', { headers: authHeaders })
-        return res.ok ? selectSystemPromptApps(await res.json()) : []
-      } catch {
-        return []
-      }
-    })()
+    // Fire-and-forget by construction: Refresh completion depends only on the
+    // skills request. The loader commits [] on every apps failure and ignores
+    // stale generations when refreshes overlap.
+    systemPromptAppsLoaderRef.current.load(authHeaders)
     try {
       const res = await fetch('/api/storage/shared-list/skills/', { headers: authHeaders })
       if (!res.ok) throw new Error(`list ${res.status}`)
@@ -274,10 +283,12 @@ export default function SkillsApp({ appId, token }) {
       window.mobius?.signal?.('error', { message: String(err?.message || err), source: isRefresh ? 'refresh' : 'load' })
       // Keep the last-known-good list intact; on the first load skills stays null.
     }
-    setSystemPromptApps(await appsRequest)
   }
 
-  useEffect(() => { load() }, []) // shared storage has no subscribe(); refresh is explicit
+  useEffect(() => {
+    load()
+    return () => systemPromptAppsLoaderRef.current.invalidate()
+  }, []) // shared storage has no subscribe(); refresh is explicit
 
   async function refresh() {
     setRefreshing(true)
@@ -506,32 +517,36 @@ export default function SkillsApp({ appId, token }) {
 
         {skills !== null && systemPromptApps.length > 0 && (
           <section className="sk-system-apps" aria-labelledby="system-prompt-apps-title">
-            <h2 className="sk-section-title" id="system-prompt-apps-title">Extends the system prompt</h2>
-            <p className="sk-section-copy">These installed apps add an always-on instruction block to every chat’s system prompt. Uninstalling an app removes its block.</p>
+            <h2 className="sk-section-title" id="system-prompt-apps-title">Apps that guide new chats</h2>
+            <p className="sk-section-copy">These installed apps add always-on instructions to new chats. Uninstalling an app removes its instructions from future chats; existing chats keep the prompt they started with.</p>
             <div className="sk-app-list">
-              {systemPromptApps.map((app) => (
-                <div className="sk-app-row" key={app.id}>
-                  <span className="sk-app-icon" aria-hidden="true">
-                    <img
-                      src={`/api/apps/${app.id}/icon?size=64`}
-                      alt=""
-                      width={40}
-                      height={40}
-                      loading="lazy"
-                      onError={(e) => {
-                        e.currentTarget.style.display = 'none'
-                        const fallback = e.currentTarget.nextElementSibling
-                        if (fallback) fallback.style.display = 'flex'
-                      }}
-                    />
-                    <span className="sk-app-icon-fallback">{(app.name || '·').trim().charAt(0).toUpperCase() || '·'}</span>
-                  </span>
-                  <div className="sk-rowbody">
-                    <div className="sk-rowname">{app.name}</div>
-                    <div className="sk-app-note">Adds an always-on prompt block</div>
+              {systemPromptApps.map((app) => {
+                const displayName = installedAppDisplayName(app)
+                const description = typeof app.description === 'string' ? app.description.trim() : ''
+                return (
+                  <div className="sk-app-row" key={app.id}>
+                    <span className="sk-app-icon" aria-hidden="true">
+                      <img
+                        src={`/api/apps/${app.id}/icon?size=64`}
+                        alt=""
+                        width={40}
+                        height={40}
+                        loading="lazy"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none'
+                          const fallback = e.currentTarget.nextElementSibling
+                          if (fallback) fallback.style.display = 'flex'
+                        }}
+                      />
+                      <span className="sk-app-icon-fallback">{displayName.charAt(0).toUpperCase()}</span>
+                    </span>
+                    <div className="sk-rowbody">
+                      <div className="sk-rowname">{displayName}</div>
+                      {description && <div className="sk-app-note">{description}</div>}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </section>
         )}
