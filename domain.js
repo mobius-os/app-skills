@@ -91,6 +91,16 @@ export function classifyLink(href) {
   return { kind: 'blocked', reason: 'relative', path }
 }
 
+// Pick the installed apps that contribute an always-on system-prompt fragment.
+// GET /api/apps/ already omits soft-deleted apps, so no tombstone check belongs
+// here. Sorting makes the read-only section stable regardless of install order.
+export function selectSystemPromptApps(apps) {
+  if (!Array.isArray(apps)) return []
+  return apps
+    .filter((app) => app?.system_app === true && Boolean(app.system_prompt_file))
+    .sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()))
+}
+
 // Turn a developer-facing fetch error into copy the owner can act on.
 export function friendlyLoadError(err) {
   const raw = String((err && err.message) || err || '')

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseSkill, classifyLink, friendlyLoadError } from '../domain.js'
+import { parseSkill, classifyLink, selectSystemPromptApps, friendlyLoadError } from '../domain.js'
 
 // Regression tests for the pure core. Portable: no absolute paths, no install,
 // discovered by `node --test` on a fresh clone.
@@ -98,4 +98,22 @@ test('classifyLink: empty/missing href is blocked, never navigated', () => {
 test('friendlyLoadError: network failures become actionable copy', () => {
   assert.match(friendlyLoadError(new Error('Failed to fetch')), /connection/i)
   assert.match(friendlyLoadError(new Error('list 500')), /error/i)
+})
+
+test('selectSystemPromptApps: keeps only true system apps with a prompt file and sorts by name', () => {
+  const apps = [
+    { id: 4, name: 'Memory', system_app: true, system_prompt_file: 'memory-core.md' },
+    { id: 2, name: 'Artifacts', system_app: true, system_prompt_file: 'artifacts-core.md' },
+    { id: 1, name: 'Skills', system_app: false, system_prompt_file: 'skills-core.md' },
+    { id: 3, name: 'Legacy', system_app: true, system_prompt_file: null },
+    { id: 6, name: 'Blank', system_app: true, system_prompt_file: '' },
+    { id: 5, name: 'Truthy only', system_app: 1, system_prompt_file: 'truthy-core.md' },
+  ]
+
+  assert.deepEqual(selectSystemPromptApps(apps).map((app) => app.name), ['Artifacts', 'Memory'])
+})
+
+test('selectSystemPromptApps: malformed API payloads are safely empty', () => {
+  assert.deepEqual(selectSystemPromptApps(null), [])
+  assert.deepEqual(selectSystemPromptApps({ apps: [] }), [])
 })

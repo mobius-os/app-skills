@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { parseSkill, classifyLink, friendlyLoadError, createDetailNav } from './domain.js'
+import { parseSkill, classifyLink, selectSystemPromptApps, friendlyLoadError, createDetailNav } from './domain.js'
 
 // Skills — a read-only browser for the agent's skills (the SKILL-style
 // markdown files under /data/shared/skills). Inspired by the Skills screen in
@@ -97,6 +97,23 @@ const CSS = `
 .sk-chev { flex: 0 0 auto; align-self: center; color: var(--muted); opacity: 0.6; }
 .sk-chev svg { width: 18px; height: 18px; }
 
+/* installed apps that contribute read-only, always-on prompt context */
+.sk-system-apps { margin: 0 20px; padding: 24px 0 max(32px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border); }
+.sk-section-title { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: 0; text-wrap: balance; }
+.sk-section-copy { margin: 6px 0 0; max-width: 68ch; color: var(--muted); font-size: 13.5px; line-height: 1.5;
+  text-wrap: pretty; }
+.sk-app-list { display: flex; flex-direction: column; margin-top: 12px; }
+.sk-app-row { display: flex; align-items: center; gap: 13px; min-height: 44px; padding: 10px 0;
+  border-bottom: 1px solid var(--border-light, var(--border)); }
+.sk-app-row:last-child { border-bottom: none; }
+.sk-app-icon { flex: 0 0 auto; width: 40px; height: 40px; border-radius: 10px; overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sk-app-icon img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.sk-app-icon-fallback { display: none; width: 100%; height: 100%; align-items: center; justify-content: center;
+  color: var(--accent); font-size: 17px; font-weight: 700; }
+.sk-app-note { margin-top: 3px; color: var(--muted); font-size: 13.5px; line-height: 1.4; }
+
 /* empty / status */
 .sk-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
   margin: auto; padding: 56px 28px; color: var(--muted); }
@@ -187,6 +204,7 @@ function initialOnline() {
 
 export default function SkillsApp({ appId, token }) {
   const [skills, setSkills] = useState(null) // null = never loaded; [] or [..] = last-known-good
+  const [systemPromptApps, setSystemPromptApps] = useState([])
   const [loadError, setLoadError] = useState(null) // user-facing copy for the latest failed load
   const [refreshing, setRefreshing] = useState(false)
   const [query, setQuery] = useState('')
@@ -214,6 +232,16 @@ export default function SkillsApp({ appId, token }) {
   // last-known-good `skills` on failure and only records `loadError`; the full
   // error empty state is reserved for the very first load (skills === null).
   async function load({ isRefresh = false } = {}) {
+    // Apps are supplemental: resolve every failure to an empty list so this
+    // request can never alter or block the primary skills-list error flow.
+    const appsRequest = (async () => {
+      try {
+        const res = await fetch('/api/apps/', { headers: authHeaders })
+        return res.ok ? selectSystemPromptApps(await res.json()) : []
+      } catch {
+        return []
+      }
+    })()
     try {
       const res = await fetch('/api/storage/shared-list/skills/', { headers: authHeaders })
       if (!res.ok) throw new Error(`list ${res.status}`)
@@ -246,6 +274,7 @@ export default function SkillsApp({ appId, token }) {
       window.mobius?.signal?.('error', { message: String(err?.message || err), source: isRefresh ? 'refresh' : 'load' })
       // Keep the last-known-good list intact; on the first load skills stays null.
     }
+    setSystemPromptApps(await appsRequest)
   }
 
   useEffect(() => { load() }, []) // shared storage has no subscribe(); refresh is explicit
@@ -473,6 +502,38 @@ export default function SkillsApp({ appId, token }) {
               </button>
             ))}
           </div>
+        )}
+
+        {skills !== null && systemPromptApps.length > 0 && (
+          <section className="sk-system-apps" aria-labelledby="system-prompt-apps-title">
+            <h2 className="sk-section-title" id="system-prompt-apps-title">Extends the system prompt</h2>
+            <p className="sk-section-copy">These installed apps add an always-on instruction block to every chat’s system prompt. Uninstalling an app removes its block.</p>
+            <div className="sk-app-list">
+              {systemPromptApps.map((app) => (
+                <div className="sk-app-row" key={app.id}>
+                  <span className="sk-app-icon" aria-hidden="true">
+                    <img
+                      src={`/api/apps/${app.id}/icon?size=64`}
+                      alt=""
+                      width={40}
+                      height={40}
+                      loading="lazy"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'
+                        const fallback = e.currentTarget.nextElementSibling
+                        if (fallback) fallback.style.display = 'flex'
+                      }}
+                    />
+                    <span className="sk-app-icon-fallback">{(app.name || '·').trim().charAt(0).toUpperCase() || '·'}</span>
+                  </span>
+                  <div className="sk-rowbody">
+                    <div className="sk-rowname">{app.name}</div>
+                    <div className="sk-app-note">Adds an always-on prompt block</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
         </div>
       </div>

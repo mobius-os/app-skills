@@ -9,6 +9,7 @@ can do. It enumerates the shared skills folder, parses each file's title and
 one-line description, searches locally, and renders the selected skill as
 sanitized markdown. Creating and editing a skill is routed to the agent (see
 below), never written from the app.
+Installed system apps that add an always-on instruction block are listed below the editable skills so their effect on every chat is visible.
 
 ## File layout
 
