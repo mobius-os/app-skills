@@ -19,10 +19,14 @@ import {
   sourceKey,
   treeToSkills,
   catalogSummary,
+  resolveCommitUrl,
+  commitOidOf,
   treeScanUrl,
+  prefixTree,
   rawSkillUrl,
   githubSkillUrl,
   createSummaryPrefetcher,
+  createGenerationGuard,
   assessCompat,
   assessInstalled,
 } from './catalog.js'
@@ -337,7 +341,7 @@ function ProvChips({ provenance, uses, compat }) {
 // scan; the IntersectionObserver only lets visible cards jump that queue (and
 // is the fallback when the pool is cancelled mid-run). Tapping a card opens
 // the full SKILL.md as its own page, like an installed skill.
-function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLoad, onInstall, onCaveats }) {
+function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLoad, onInstall, onCaveats, onRetry }) {
   const ref = useRef(null)
 
   useEffect(() => {
@@ -362,14 +366,29 @@ function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLoad, onI
             : 'Loading summary…'}
       </p>
       <div className="sk-cardbtns">
+        {/* Install arms only once the exact SKILL.md AND its compat verdict
+            are in hand — a quick tap can never install unreviewed bytes. On a
+            failed fetch it stays disabled and Retry takes its place beside it. */}
         <button
           className="sk-btn"
-          disabled={busy || installed}
+          disabled={busy || installed || !loaded || !compat}
           onClick={(e) => { e.stopPropagation(); onInstall() }}
-          title={installed ? 'Already in your agent’s skills' : 'Install this skill for your agent'}
+          title={
+            installed ? 'Already in your agent’s skills'
+              : !loaded || !compat ? 'Install unlocks once the skill has loaded'
+                : 'Install this skill for your agent'
+          }
         >
           {installed ? 'Installed' : busy ? 'Installing…' : 'Install'}
         </button>
+        {desc === 'failed' && (
+          <button
+            className="sk-btn ghost"
+            onClick={(e) => { e.stopPropagation(); onRetry() }}
+          >
+            Retry
+          </button>
+        )}
         {compat && (compat.ok ? (
           <span className="sk-compat is-ok">✓ Works with Möbius</span>
         ) : (
@@ -393,7 +412,6 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   const [sources, setSources] = useState(DEFAULT_SOURCES)
   const [open, setOpen] = useState(null) // { source } | null = source list
   const [skillList, setSkillList] = useState(null)
-  const [truncated, setTruncated] = useState(false)
   const [descs, setDescs] = useState({}) // dir -> { ...summary, raw } | 'loading' | 'failed'
   const [filter, setFilter] = useState('')
   const [detailDir, setDetailDir] = useState(null) // dir open as a full page
@@ -409,6 +427,10 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   const compatCacheRef = useRef({}) // dir -> assessCompat result, per source scan
   const scrollRef = useRef(null)
   const listScrollRef = useRef(0) // card-list offset, restored when a page closes
+  // Every scan takes a generation token; a response carrying a stale token is
+  // dropped, so a slow source A can never overwrite state after B is current.
+  const guardRef = useRef(null)
+  if (!guardRef.current) guardRef.current = createGenerationGuard()
 
   useEffect(() => {
     // Sources are app data: a saved sources.json overrides the defaults, so
@@ -453,52 +475,82 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
     return res.text()
   }
 
-  const loadDescription = async (source, dir) => {
-    if (descsRef.current[dir] || inflightRef.current.has(dir)) return
+  const loadDescription = async (source, dir, oid, token, { force = false } = {}) => {
+    if (!force && (descsRef.current[dir] || inflightRef.current.has(dir))) return
     inflightRef.current.add(dir)
+    if (!guardRef.current.isCurrent(token)) return
     setDescs((d) => ({ ...d, [dir]: 'loading' }))
     try {
       // Keep the raw markdown next to the summary: the card only needs the
       // description, but the full-page detail view renders the whole file.
-      const text = await proxied(rawSkillUrl(source, dir))
+      // Fetched at the scan's pinned OID — the previewed bytes are the exact
+      // bytes an install of this scan would materialize.
+      const text = await proxied(rawSkillUrl(source, dir, oid))
+      if (!guardRef.current.isCurrent(token)) return
       setDescs((d) => ({ ...d, [dir]: { ...catalogSummary(text), raw: text } }))
     } catch {
+      if (!guardRef.current.isCurrent(token)) return
       setDescs((d) => ({ ...d, [dir]: 'failed' }))
     }
   }
 
+  const retryDescription = (dir) => {
+    if (!open) return
+    inflightRef.current.delete(dir)
+    loadDescription(open.source, dir, open.oid, open.token, { force: true })
+  }
+
   const openSource = async (source) => {
     prefetcherRef.current?.cancel()
+    const token = guardRef.current.next()
     setOpen({ source })
-    setSkillList(null); setTruncated(false); setDescs({}); setFilter(''); setDetailDir(null)
+    setSkillList(null); setDescs({}); setFilter(''); setDetailDir(null)
     setScanBusy(true); setError(null); setNotice(null)
     inflightRef.current = new Set()
     compatCacheRef.current = {}
     listScrollRef.current = 0
     if (scrollRef.current) scrollRef.current.scrollTop = 0
     try {
-      const data = JSON.parse(await proxied(treeScanUrl(source)))
+      // Pin this scan to one immutable commit: tree, previews, verdicts, and
+      // the install POST all name this OID.
+      const oid = commitOidOf(JSON.parse(await proxied(resolveCommitUrl(source))))
+      if (!oid) throw new Error('could not pin this source to a commit')
+      if (!guardRef.current.isCurrent(token)) return
+      const data = JSON.parse(await proxied(treeScanUrl(source, oid)))
+      if (!guardRef.current.isCurrent(token)) return
       if (!Array.isArray(data.tree)) throw new Error(data.message || 'unexpected GitHub response (no tree)')
-      const skills = treeToSkills(data.tree, source.path)
-      // Keep the raw tree: the skill page's compat badge predicts what the
-      // installer would drop from it, no extra fetches needed.
-      setOpen({ source, tree: data.tree })
+      if (data.truncated) {
+        // An incomplete listing is an error, not a catalog — arbitrary skills
+        // would silently be missing from what looks like a complete list.
+        throw new Error(
+          'GitHub truncated the listing for this source, so results would be '
+          + 'incomplete. Use a source with a narrower path.',
+        )
+      }
+      // Re-prefix the scoped tree to repo-relative paths; keep it on `open` —
+      // the compat badge predicts installer behavior from it, zero refetches.
+      const fullTree = prefixTree(data.tree, source.path)
+      const skills = treeToSkills(fullTree, source.path)
+      setOpen({ source, oid, token, tree: fullTree })
       setSkillList(skills)
-      setTruncated(!!data.truncated)
       window.mobius?.signal?.('item_opened', { type: 'catalog-source', slug: source.repo })
-      const prefetcher = createSummaryPrefetcher({ loadOne: (dir) => loadDescription(source, dir) })
+      const prefetcher = createSummaryPrefetcher({
+        loadOne: (dir) => loadDescription(source, dir, oid, token),
+      })
       prefetcherRef.current = prefetcher
       prefetcher.start(skills.map((s) => s.dir))
     } catch (e) {
+      if (!guardRef.current.isCurrent(token)) return
       setError(String(e?.message || e))
       window.mobius?.signal?.('error', { message: String(e?.message || e), source: 'catalog_scan' })
     } finally {
-      setScanBusy(false)
+      if (guardRef.current.isCurrent(token)) setScanBusy(false)
     }
   }
 
   const backToSources = () => {
     prefetcherRef.current?.cancel()
+    guardRef.current.cancel() // in-flight scan/preview responses become stale
     setOpen(null)
     setSkillList(null); setError(null); setNotice(null); setDetailDir(null); setFilter('')
     listScrollRef.current = 0
@@ -509,17 +561,23 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   const openSkillPage = (dir, withCaveats = false) => {
     setDetailDir(dir)
     setShowCaveats(!!withCaveats)
-    if (open) loadDescription(open.source, dir)
+    if (open) loadDescription(open.source, dir, open.oid, open.token)
     window.mobius?.signal?.('item_opened', { type: 'catalog-skill', slug: dir })
   }
 
   const install = async (source, dir) => {
     setBusyDir(dir); setError(null); setNotice(null)
     try {
+      // Install the exact revision that was previewed: the scan's pinned OID,
+      // never the mutable branch name.
       const res = await fetch('/api/skills/install', {
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo: source.repo, path: dir, ref: source.ref || 'main' }),
+        body: JSON.stringify({
+          repo: source.repo,
+          path: dir,
+          ref: open?.oid || source.ref || 'main',
+        }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || `install failed (${res.status})`)
@@ -572,6 +630,12 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   }, [open, skillList, descs])
   const compat = (detailDir && compatByDir[detailDir]) || null
 
+  // An amber verdict must be on screen BEFORE the first moment Install can be
+  // tapped — the notes open themselves rather than waiting behind the chip.
+  useEffect(() => {
+    if (detailDir && compat && !compat.ok) setShowCaveats(true)
+  }, [detailDir, compat])
+
   // Links in a catalog SKILL.md: external → new tab; anything else (relative
   // resource paths we haven't fetched) is blocked so the app stays mounted.
   function onDetailClick(e) {
@@ -618,21 +682,27 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                 ⚠ {compat.caveats.length} {compat.caveats.length === 1 ? 'thing' : 'things'} to know
               </button>
             ))}
+            {/* Same arming rule as the cards: no install before the exact
+                SKILL.md and its verdict are on screen. */}
             <button
               className="sk-btn"
-              disabled={busyDir === detailDir || detailInstalled}
+              disabled={busyDir === detailDir || detailInstalled || !detailLoaded || !compat}
               onClick={() => install(open.source, detailDir)}
-              title={detailInstalled ? 'Already in your agent’s skills' : 'Install this skill for your agent'}
+              title={
+                detailInstalled ? 'Already in your agent’s skills'
+                  : !detailLoaded || !compat ? 'Install unlocks once the skill has loaded'
+                    : 'Install this skill for your agent'
+              }
             >
               {detailInstalled ? 'Installed' : busyDir === detailDir ? 'Installing…' : 'Install'}
             </button>
             <a
               className="sk-iconbtn"
-              href={githubSkillUrl(open.source, detailDir)}
+              href={githubSkillUrl(open.source, detailDir, open.oid)}
               target="_blank"
               rel="noopener noreferrer"
               aria-label="View on GitHub"
-              title="View on GitHub"
+              title="View on GitHub (at the reviewed revision)"
             >{EXTERNAL}</a>
           </>
         )}
@@ -675,9 +745,13 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
               <div className="sk-empty">
                 <div className="sk-empty-mark" aria-hidden="true">⚠️</div>
                 <div className="sk-empty-title">Couldn’t load this skill</div>
-                <p className="sk-empty-text">SKILL.md for “{detailName}” couldn’t be fetched from GitHub.</p>
+                <p className="sk-empty-text">
+                  SKILL.md for “{detailName}” couldn’t be fetched from GitHub, so
+                  it can’t be reviewed — and Install stays off until it can.
+                </p>
+                <button className="sk-retry" onClick={() => retryDescription(detailDir)}>Try again</button>
                 {open && (
-                  <a className="sk-btn ghost" href={githubSkillUrl(open.source, detailDir)} target="_blank" rel="noopener noreferrer">
+                  <a className="sk-btn ghost" href={githubSkillUrl(open.source, detailDir, open.oid)} target="_blank" rel="noopener noreferrer">
                     Read on GitHub {EXTERNAL}
                   </a>
                 )}
@@ -707,7 +781,6 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
               {skillList !== null && (
                 <div className="sk-cat-count">
                   {skillList.length} {skillList.length === 1 ? 'skill' : 'skills'}
-                  {truncated ? ' — large repo, GitHub truncated the list; some may be missing' : ''}
                 </div>
               )}
               {scanBusy && (
@@ -724,9 +797,10 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                       busy={busyDir === s.dir}
                       compat={compatByDir[s.dir] || null}
                       onOpen={() => openSkillPage(s.dir)}
-                      onLoad={() => loadDescription(open.source, s.dir)}
+                      onLoad={() => loadDescription(open.source, s.dir, open.oid, open.token)}
                       onInstall={() => install(open.source, s.dir)}
                       onCaveats={() => openSkillPage(s.dir, true)}
+                      onRetry={() => retryDescription(s.dir)}
                     />
                   ))}
                 </div>

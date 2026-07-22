@@ -220,16 +220,58 @@ function nameSome(names, cap = 4) {
   return names.length > cap ? `${shown}, +${names.length - cap} more` : shown
 }
 
-export function treeScanUrl(source) {
-  return `https://api.github.com/repos/${source.repo}/git/trees/${source.ref || 'main'}?recursive=1`
+// The mutable ref (main, a tag) resolves to an immutable commit OID once per
+// scan; the tree listing, every SKILL.md preview, the GitHub page link, and
+// the install POST all name that OID. What the owner reviews is provably what
+// installs, even if the source repo moves mid-browse.
+export function resolveCommitUrl(source) {
+  return `https://api.github.com/repos/${source.repo}/commits/${encodeURIComponent(source.ref || 'main')}`
 }
 
-export function rawSkillUrl(source, dir) {
-  return `https://raw.githubusercontent.com/${source.repo}/${source.ref || 'main'}/${dir}/SKILL.md`
+export function commitOidOf(payload) {
+  const sha = payload && typeof payload.sha === 'string' ? payload.sha : ''
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : null
 }
 
-export function githubSkillUrl(source, dir) {
-  return `https://github.com/${source.repo}/blob/${source.ref || 'main'}/${dir}/SKILL.md`
+// Scoped to the source's subtree via git's `<oid>:<path>` rev syntax — one
+// request, and a large repo outside the path can't push the listing into
+// GitHub's truncation.
+export function treeScanUrl(source, oid) {
+  const at = oid || source.ref || 'main'
+  const spec = source.path ? `${at}:${source.path.replace(/^\/+|\/+$/g, '')}` : at
+  return `https://api.github.com/repos/${source.repo}/git/trees/${encodeURIComponent(spec)}?recursive=1`
+}
+
+// A scoped tree's paths are subtree-relative; everything downstream (skill
+// dirs, compat assessment, install coordinates) speaks repo-relative paths,
+// so re-prefix once at the scan boundary.
+export function prefixTree(tree, pathPrefix) {
+  const prefix = String(pathPrefix || '').replace(/^\/+|\/+$/g, '')
+  if (!prefix) return Array.isArray(tree) ? tree : []
+  return (Array.isArray(tree) ? tree : []).map((e) =>
+    e && typeof e.path === 'string' ? { ...e, path: `${prefix}/${e.path}` } : e,
+  )
+}
+
+export function rawSkillUrl(source, dir, oid) {
+  return `https://raw.githubusercontent.com/${source.repo}/${oid || source.ref || 'main'}/${dir}/SKILL.md`
+}
+
+export function githubSkillUrl(source, dir, oid) {
+  return `https://github.com/${source.repo}/blob/${oid || source.ref || 'main'}/${dir}/SKILL.md`
+}
+
+// Monotonic generation guard for the catalog's async flows: every new scan
+// takes a token; any response holding a stale token must be dropped, never
+// written into state that now belongs to a different source. Pure so the
+// A→B reversed-response races are unit-testable.
+export function createGenerationGuard() {
+  let generation = 0
+  return {
+    next() { return ++generation },
+    isCurrent(token) { return token === generation },
+    cancel() { generation += 1 },
+  }
 }
 
 // Background prefetch pool: after a scan, walk every dir through `loadOne`

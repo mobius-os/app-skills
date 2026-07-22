@@ -5,10 +5,14 @@ import {
   sourceKey,
   treeToSkills,
   catalogSummary,
+  resolveCommitUrl,
+  commitOidOf,
   treeScanUrl,
+  prefixTree,
   rawSkillUrl,
   githubSkillUrl,
   createSummaryPrefetcher,
+  createGenerationGuard,
   assessCompat,
   assessInstalled,
 } from '../catalog.js'
@@ -91,11 +95,49 @@ test('catalogSummary: peek is capped at 700 chars', () => {
   assert.equal(s.peek.length, 700)
 })
 
-test('url builders: ref defaults to main and paths compose correctly', () => {
+const OID = 'a1b2c3d4'.repeat(5)
+
+test('url builders: scan is scoped to the subtree and everything pins to the OID', () => {
   const src = { repo: 'anthropics/skills', path: 'skills' }
-  assert.equal(treeScanUrl(src), 'https://api.github.com/repos/anthropics/skills/git/trees/main?recursive=1')
-  assert.equal(rawSkillUrl(src, 'skills/pdf'), 'https://raw.githubusercontent.com/anthropics/skills/main/skills/pdf/SKILL.md')
+  assert.equal(
+    resolveCommitUrl(src),
+    'https://api.github.com/repos/anthropics/skills/commits/main',
+  )
+  assert.equal(
+    treeScanUrl(src, OID),
+    `https://api.github.com/repos/anthropics/skills/git/trees/${encodeURIComponent(`${OID}:skills`)}?recursive=1`,
+  )
+  // A whole-repo source scans the OID itself; without an OID the ref shows.
+  assert.equal(
+    treeScanUrl({ repo: 'o/r' }, OID),
+    `https://api.github.com/repos/o/r/git/trees/${OID}?recursive=1`,
+  )
+  assert.equal(treeScanUrl(src), `https://api.github.com/repos/anthropics/skills/git/trees/${encodeURIComponent('main:skills')}?recursive=1`)
+  assert.equal(rawSkillUrl(src, 'skills/pdf', OID), `https://raw.githubusercontent.com/anthropics/skills/${OID}/skills/pdf/SKILL.md`)
+  assert.equal(githubSkillUrl(src, 'skills/pdf', OID), `https://github.com/anthropics/skills/blob/${OID}/skills/pdf/SKILL.md`)
   assert.equal(githubSkillUrl({ ...src, ref: 'v2' }, 'skills/pdf'), 'https://github.com/anthropics/skills/blob/v2/skills/pdf/SKILL.md')
+})
+
+test('commitOidOf accepts only a 40-hex sha', () => {
+  assert.equal(commitOidOf({ sha: OID }), OID)
+  assert.equal(commitOidOf({ sha: 'main' }), null)
+  assert.equal(commitOidOf({ sha: OID.slice(1) }), null)
+  assert.equal(commitOidOf({}), null)
+  assert.equal(commitOidOf(null), null)
+})
+
+test('prefixTree re-prefixes scoped tree paths to repo-relative', () => {
+  const scoped = [
+    { type: 'blob', path: 'pdf/SKILL.md', size: 4 },
+    { type: 'tree', path: 'pdf' },
+  ]
+  assert.deepEqual(
+    prefixTree(scoped, 'skills/').map((e) => e.path),
+    ['skills/pdf/SKILL.md', 'skills/pdf'],
+  )
+  // Whole-repo sources pass through untouched.
+  assert.equal(prefixTree(scoped, '')[0].path, 'pdf/SKILL.md')
+  assert.deepEqual(prefixTree(null, 'x'), [])
 })
 
 test('prefetcher: bounds concurrency and still visits every dir', async () => {
@@ -169,6 +211,71 @@ test('prefetcher: cancel() stops the pool without starting another', async () =>
   release()
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.deepEqual(seen, ['a'])
+})
+
+// --- generation guard: stale catalog responses must be dropped ---
+
+test('generationGuard: tokens go stale on next() and cancel()', () => {
+  const guard = createGenerationGuard()
+  const a = guard.next()
+  assert.equal(guard.isCurrent(a), true)
+  const b = guard.next()
+  assert.equal(guard.isCurrent(a), false)
+  assert.equal(guard.isCurrent(b), true)
+  guard.cancel()
+  assert.equal(guard.isCurrent(b), false)
+})
+
+// Models CatalogScreen.openSource exactly: each scan takes a token, awaits
+// its tree fetch, and only commits state while its token is current. A opens
+// first but responds LAST — its late tree must not overwrite B's.
+test('generationGuard: slow tree response for A cannot overwrite current B', async () => {
+  const guard = createGenerationGuard()
+  const state = {}
+  const gate = {}
+  const trees = {
+    A: new Promise((res) => { gate.A = () => res(['a-skill']) }),
+    B: new Promise((res) => { gate.B = () => res(['b-skill']) }),
+  }
+  const openSource = async (name) => {
+    const token = guard.next()
+    const tree = await trees[name]
+    if (!guard.isCurrent(token)) return
+    state.open = name
+    state.skills = tree
+  }
+  const a = openSource('A')
+  const b = openSource('B')
+  gate.B(); await b // B (current) resolves first and commits
+  gate.A(); await a // A resolves after — stale token, dropped
+  assert.equal(state.open, 'B')
+  assert.deepEqual(state.skills, ['b-skill'])
+})
+
+// Models loadDescription: markdown for a dir name that exists in BOTH sources
+// arrives after the source switched — the stale bytes must not populate the
+// new source's cache for that same dir key.
+test('generationGuard: stale markdown for a shared dir name is dropped', async () => {
+  const guard = createGenerationGuard()
+  let descs = {}
+  const gate = {}
+  const md = {
+    A: new Promise((res) => { gate.A = () => res('# from A') }),
+    B: new Promise((res) => { gate.B = () => res('# from B') }),
+  }
+  const loadDescription = async (sourceName, dir, token) => {
+    const text = await md[sourceName]
+    if (!guard.isCurrent(token)) return
+    descs = { ...descs, [dir]: text }
+  }
+  const tokenA = guard.next()
+  const inflightA = loadDescription('A', 'skills/pdf', tokenA)
+  const tokenB = guard.next() // source switched; caches were reset
+  descs = {}
+  const inflightB = loadDescription('B', 'skills/pdf', tokenB)
+  gate.B(); await inflightB
+  gate.A(); await inflightA // A's bytes arrive last, for the SAME dir key
+  assert.equal(descs['skills/pdf'], '# from B')
 })
 
 // --- assessCompat: the pre-install badge's prediction of the installer ---
