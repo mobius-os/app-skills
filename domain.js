@@ -3,7 +3,7 @@
 // accepted only as an injected function, so parsing and load coordination can
 // be unit-tested without bundling react/marked/dompurify.
 
-function splitFrontmatter(content) {
+export function splitFrontmatter(content) {
   const text = content || ''
   const lines = text.split(/\r?\n/)
   if (lines[0]?.trim() !== '---') return { body: text, meta: {} }
@@ -139,6 +139,57 @@ export function installedAppDisplayName(app) {
   const name = typeof app?.name === 'string' ? app.name.trim() : ''
   const slug = typeof app?.slug === 'string' ? app.slug.trim() : ''
   return name || slug || 'Installed app'
+}
+
+// ---- v2: installed-list API + catalog screen helpers ----
+
+// GET /api/skills row → the shared-storage path serving its markdown. Flat
+// skills live at shared/skills/<id>.md, directory skills (the external
+// SKILL.md convention) at shared/skills/<id>/SKILL.md.
+export function skillContentPath(skill) {
+  const id = encodeURIComponent(String(skill?.id ?? ''))
+  return skill?.is_dir
+    ? `/api/storage/shared/skills/${id}/SKILL.md`
+    : `/api/storage/shared/skills/${id}.md`
+}
+
+// Provenance string from GET /api/skills → a chip the list can render.
+// `kind` is a stable CSS modifier; `label` is the visible text; `title` is the
+// hover/long-press explanation.
+export function provenanceChip(provenance) {
+  const p = typeof provenance === 'string' ? provenance.trim() : ''
+  if (p === 'seed') return { kind: 'seed', label: 'built-in', title: 'Shipped with Möbius' }
+  if (p === 'agent') return { kind: 'agent', label: 'agent-made', title: 'Authored by your agent' }
+  if (p.startsWith('app:')) {
+    const slug = p.slice('app:'.length)
+    return { kind: 'app', label: `app · ${slug}`, title: `Owned by the ${slug} app` }
+  }
+  if (p.startsWith('installed:')) {
+    const src = p.slice('installed:'.length)
+    return { kind: 'installed', label: src || 'installed', title: `Installed from ${src || 'the ecosystem'}` }
+  }
+  return { kind: 'other', label: p || 'unknown', title: p || 'Unknown origin' }
+}
+
+// Only skills recorded by the install API may be removed in-app; seeds, agent
+// files, and app-owned skills keep their own lifecycles.
+export function isUninstallable(provenance) {
+  return typeof provenance === 'string' && provenance.startsWith('installed:')
+}
+
+// API skill names are usually slugs; render a readable title without mangling
+// a name that already carries real casing or spacing.
+export function skillDisplayTitle(name) {
+  const n = typeof name === 'string' ? name.trim() : ''
+  if (!n) return 'Untitled skill'
+  if (/[A-Z ]/.test(n)) return n
+  return n.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+export function usageLabel(uses) {
+  const n = Number(uses)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  return `${n}× in 30d`
 }
 
 // Turn a developer-facing fetch error into copy the owner can act on.

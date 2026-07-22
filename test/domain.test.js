@@ -8,6 +8,11 @@ import {
   createSystemPromptAppsLoader,
   installedAppDisplayName,
   friendlyLoadError,
+  skillContentPath,
+  provenanceChip,
+  isUninstallable,
+  skillDisplayTitle,
+  usageLabel,
 } from '../domain.js'
 
 // Regression tests for the dependency-free core. Portable: no absolute paths,
@@ -192,4 +197,53 @@ test('installedAppDisplayName: trims name, then falls back to slug and neutral c
   assert.equal(installedAppDisplayName({ name: '   ', slug: '  legacy-app  ' }), 'legacy-app')
   assert.equal(installedAppDisplayName({ name: '', slug: '' }), 'Installed app')
   assert.equal(installedAppDisplayName(null), 'Installed app')
+})
+
+test('skillContentPath: flat skills read <id>.md, directory skills read <id>/SKILL.md', () => {
+  assert.equal(skillContentPath({ id: 'cron', is_dir: false }), '/api/storage/shared/skills/cron.md')
+  assert.equal(skillContentPath({ id: 'skill-creator', is_dir: true }), '/api/storage/shared/skills/skill-creator/SKILL.md')
+})
+
+test('skillContentPath: the id is URL-encoded, never path-spliced raw', () => {
+  assert.equal(skillContentPath({ id: 'a b', is_dir: false }), '/api/storage/shared/skills/a%20b.md')
+  assert.equal(skillContentPath({ id: 'x/y', is_dir: true }), '/api/storage/shared/skills/x%2Fy/SKILL.md')
+})
+
+test('provenanceChip: each provenance family maps to a stable kind + readable label', () => {
+  assert.deepEqual(provenanceChip('seed').kind, 'seed')
+  assert.equal(provenanceChip('seed').label, 'built-in')
+  assert.equal(provenanceChip('agent').kind, 'agent')
+  assert.deepEqual(provenanceChip('app:memory'), { kind: 'app', label: 'app · memory', title: 'Owned by the memory app' })
+  const inst = provenanceChip('installed:anthropics/skills')
+  assert.equal(inst.kind, 'installed')
+  assert.equal(inst.label, 'anthropics/skills')
+})
+
+test('provenanceChip: unknown or missing provenance degrades to a neutral chip', () => {
+  assert.equal(provenanceChip('').kind, 'other')
+  assert.equal(provenanceChip(undefined).kind, 'other')
+  assert.equal(provenanceChip('installed:').label, 'installed')
+})
+
+test('isUninstallable: only installed:* provenance may be removed in-app', () => {
+  assert.equal(isUninstallable('installed:anthropics/skills'), true)
+  assert.equal(isUninstallable('seed'), false)
+  assert.equal(isUninstallable('agent'), false)
+  assert.equal(isUninstallable('app:memory'), false)
+  assert.equal(isUninstallable(undefined), false)
+})
+
+test('skillDisplayTitle: slugs become Title Case; real names pass through', () => {
+  assert.equal(skillDisplayTitle('finding-skills'), 'Finding Skills')
+  assert.equal(skillDisplayTitle('skill_creator'), 'Skill Creator')
+  assert.equal(skillDisplayTitle('PDF Processing'), 'PDF Processing')
+  assert.equal(skillDisplayTitle(''), 'Untitled skill')
+  assert.equal(skillDisplayTitle(null), 'Untitled skill')
+})
+
+test('usageLabel: zero/invalid usage renders nothing, positive counts read naturally', () => {
+  assert.equal(usageLabel(0), '')
+  assert.equal(usageLabel(undefined), '')
+  assert.equal(usageLabel(-2), '')
+  assert.equal(usageLabel(7), '7× in 30d')
 })
