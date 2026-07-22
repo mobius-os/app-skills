@@ -15,6 +15,10 @@ import {
   createGenerationGuard,
   assessCompat,
   assessInstalled,
+  resourceRelOk,
+  installIdOf,
+  normalizeSources,
+  listInstalledFiles,
 } from '../catalog.js'
 
 // Regression tests for the catalog core. Portable: no absolute paths, no
@@ -45,8 +49,8 @@ test('treeToSkills: keeps only SKILL.md dirs, sorted by name', () => {
     { path: 'skills/notes.md' },
   ]
   assert.deepEqual(treeToSkills(tree, ''), [
-    { dir: 'skills/artifacts', name: 'artifacts' },
-    { dir: 'skills/pdf', name: 'pdf' },
+    { dir: 'skills/artifacts', name: 'artifacts', id: 'artifacts' },
+    { dir: 'skills/pdf', name: 'pdf', id: 'pdf' },
   ])
 })
 
@@ -56,13 +60,13 @@ test('treeToSkills: a path prefix scopes to that subtree (boundary-safe)', () =>
     { path: 'skills-extra/b/SKILL.md' },
     { path: 'other/c/SKILL.md' },
   ]
-  assert.deepEqual(treeToSkills(tree, 'skills'), [{ dir: 'skills/a', name: 'a' }])
+  assert.deepEqual(treeToSkills(tree, 'skills'), [{ dir: 'skills/a', name: 'a', id: 'a' }])
 })
 
 test('treeToSkills: tolerates malformed tree entries and a non-array input', () => {
   assert.deepEqual(treeToSkills(null, ''), [])
   assert.deepEqual(treeToSkills([{}, { path: 42 }, null, { path: 'x/SKILL.md' }], ''), [
-    { dir: 'x', name: 'x' },
+    { dir: 'x', name: 'x', id: 'x' },
   ])
 })
 
@@ -211,6 +215,124 @@ test('prefetcher: cancel() stops the pool without starting another', async () =>
   release()
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.deepEqual(seen, ['a'])
+})
+
+// --- resourceRelOk: EXACT mirror of the backend's _resource_rel_ok ---
+
+test('resourceRelOk matches the backend contract case for case', () => {
+  assert.ok(resourceRelOk('ref.md'))
+  assert.ok(resourceRelOk('scripts/run.py'))
+  assert.ok(resourceRelOk('a/b/c/deep.md')) // 4 segments = at the cap
+  assert.ok(!resourceRelOk('a/b/c/d/deep.md')) // 5 segments — backend drops it
+  assert.ok(!resourceRelOk('../up.md'))
+  assert.ok(!resourceRelOk('.hidden.md'))
+  assert.ok(!resourceRelOk('dir/.hidden.md'))
+  assert.ok(!resourceRelOk('dir//double.md'))
+  assert.ok(!resourceRelOk('win\\path.md'))
+  assert.ok(!resourceRelOk('binary.png'))
+  assert.ok(!resourceRelOk(''))
+})
+
+test('assessCompat: depth-5 and dot-prefixed files are dropped exactly like the installer', () => {
+  const tree = [
+    blob(`${DIR}/SKILL.md`),
+    blob(`${DIR}/a/b/c/at-cap.md`), // 4 segments — installs
+    blob(`${DIR}/a/b/c/d/over.md`), // 5 segments — the backend drops this
+    blob(`${DIR}/.github/ci.yml`),
+  ]
+  const res = assessCompat(tree, DIR, OK_MD)
+  const dropped = res.caveats.find((c) => c.kind === 'dropped')
+  assert.ok(dropped)
+  assert.match(dropped.text, /over\.md/)
+  assert.match(dropped.text, /ci\.yml/)
+  assert.ok(!dropped.text.includes('at-cap.md'))
+})
+
+// --- install identity + source-override validation ---
+
+test('installIdOf lowercases like the server derivation; treeToSkills carries it', () => {
+  assert.equal(installIdOf('PDF'), 'pdf')
+  const tree = [{ type: 'blob', path: 'skills/PDF/SKILL.md' }]
+  const [skill] = treeToSkills(tree, 'skills')
+  assert.equal(skill.name, 'PDF')
+  assert.equal(skill.id, 'pdf') // installed checks compare THIS
+})
+
+test('normalizeSources drops malformed entries, caps the list, keeps defaults-compatible shapes', () => {
+  const good = { label: 'Ok', repo: 'o/r', path: 'skills', ref: 'main' }
+  const out = normalizeSources([
+    good,
+    'not-an-object',
+    { repo: 'no-slash' },
+    { repo: 'o/r', path: '../up' },
+    { repo: 'o/r', path: 'ok', ref: 'bad ref!' },
+    { repo: 'o/r2', label: '  padded   label  ' },
+  ])
+  assert.deepEqual(out[0], good)
+  assert.equal(out.length, 2)
+  assert.equal(out[1].label, 'padded label')
+  assert.equal(out[1].ref, 'main')
+  assert.equal(normalizeSources('garbage').length, 0)
+  assert.equal(normalizeSources([{ repo: `o/r`, path: 'x'.repeat(300) }]).length, 0)
+  const oversized = Array.from({ length: 30 }, (_, i) => ({ repo: `o/r${i}` }))
+  assert.equal(normalizeSources(oversized).length, 12)
+  // Every default source survives its own validation.
+  assert.equal(normalizeSources(DEFAULT_SOURCES).length, DEFAULT_SOURCES.length)
+})
+
+// --- listInstalledFiles: encoded, complete-or-no-verdict traversal ---
+
+function cannedLister(pages) {
+  const seen = []
+  const fetchJson = async (url) => {
+    seen.push(url)
+    return url in pages ? pages[url] : null
+  }
+  return { fetchJson, seen }
+}
+
+test('listInstalledFiles walks nested dirs with segment-encoded URLs', async () => {
+  const base = '/api/storage/shared-list/skills'
+  const { fetchJson, seen } = cannedLister({
+    [`${base}/my.skill?limit=200`]: { entries: [
+      { name: 'SKILL.md', type: 'file' },
+      { name: 'my docs', type: 'directory' },
+    ], next_cursor: null },
+    [`${base}/my.skill/my%20docs?limit=200`]: { entries: [
+      { name: '100%.py', type: 'file' },
+    ], next_cursor: null },
+  })
+  const files = await listInstalledFiles(fetchJson, 'my.skill')
+  // The dir with a space was requested ENCODED (the canned map only answers
+  // the encoded URL), and rel paths stay raw for the compat check.
+  assert.deepEqual(files.sort(), ['SKILL.md', 'my docs/100%.py'])
+  assert.equal(seen[1], `${base}/my.skill/my%20docs?limit=200`)
+})
+
+test('listInstalledFiles returns null (no verdict) on any incomplete walk', async () => {
+  const base = '/api/storage/shared-list/skills'
+  // A paginated directory — more entries exist than we walked.
+  let { fetchJson } = cannedLister({
+    [`${base}/s?limit=200`]: { entries: [{ name: 'SKILL.md', type: 'file' }], next_cursor: 'more' },
+  })
+  assert.equal(await listInstalledFiles(fetchJson, 's'), null)
+  // A failed page.
+  ;({ fetchJson } = cannedLister({}))
+  assert.equal(await listInstalledFiles(fetchJson, 's'), null)
+  // A directory too deep to enumerate is unknown, not implicitly empty.
+  ;({ fetchJson } = cannedLister({
+    [`${base}/s?limit=200`]: { entries: [{ name: 'a', type: 'directory' }], next_cursor: null },
+    [`${base}/s/a?limit=200`]: { entries: [{ name: 'b', type: 'directory' }], next_cursor: null },
+    [`${base}/s/a/b?limit=200`]: { entries: [{ name: 'c', type: 'directory' }], next_cursor: null },
+    [`${base}/s/a/b/c?limit=200`]: { entries: [{ name: 'd', type: 'directory' }], next_cursor: null },
+  }))
+  assert.equal(await listInstalledFiles(fetchJson, 's'), null)
+  // Page budget exhausted with work remaining.
+  const many = { entries: Array.from({ length: 30 }, (_, i) => ({ name: `d${i}`, type: 'directory' })), next_cursor: null }
+  const pages = { [`${base}/s?limit=200`]: many }
+  for (let i = 0; i < 30; i++) pages[`${base}/s/d${i}?limit=200`] = { entries: [], next_cursor: null }
+  ;({ fetchJson } = cannedLister(pages))
+  assert.equal(await listInstalledFiles(fetchJson, 's'), null)
 })
 
 // --- generation guard: stale catalog responses must be dropped ---

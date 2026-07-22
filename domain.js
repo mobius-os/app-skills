@@ -67,7 +67,7 @@ export function parseSkill(name, content) {
 //   { kind: 'external', url } — an http/https link → open in a new browser tab
 //   { kind: 'anchor' }        — an in-page `#fragment` → harmless, leave default
 //   { kind: 'blocked', ... }  — anything else (other protocol, sub-path) → do not navigate
-export function classifyLink(href) {
+export function classifyLink(href, { dirSkill = false } = {}) {
   const raw = (href || '').trim()
   if (!raw) return { kind: 'blocked', reason: 'empty' }
   if (raw.startsWith('#')) return { kind: 'anchor' }
@@ -79,9 +79,19 @@ export function classifyLink(href) {
     // unsupported inside the sandbox — block it rather than navigate.
     return { kind: 'blocked', reason: 'protocol', scheme }
   }
-  // No scheme → a relative link. Only a same-folder `.md` (optionally `./name.md`)
-  // maps to another skill; a sub-path or bare relative link has no in-app target.
   const path = raw.split(/[?#]/)[0]
+  if (dirSkill) {
+    // Inside a `<id>/SKILL.md` directory skill, a relative link names a
+    // bundled RESOURCE of that same skill (reference.md, scripts/x.py) — the
+    // cross-skill slug convention belongs to legacy flat skills only.
+    const clean = path.replace(/^\.\//, '')
+    if (clean && !clean.startsWith('/') && !clean.split('/').includes('..')) {
+      return { kind: 'resource', path: clean }
+    }
+    return { kind: 'blocked', reason: 'relative', path }
+  }
+  // Flat skill → a same-folder `.md` (optionally `./name.md`) maps to another
+  // skill; a sub-path or bare relative link has no in-app target.
   const md = path.match(/^(?:\.\/)?([^/\\]+)\.md$/i)
   if (md) {
     let slug
@@ -126,6 +136,61 @@ export function createSystemPromptAppsLoader({ fetchImpl, onApps }) {
     void fetchSystemPromptApps(fetchImpl, headers).then((apps) => {
       if (requestGeneration === generation) onApps(apps)
     })
+  }
+
+  function invalidate() {
+    generation += 1
+  }
+
+  return { load, invalidate }
+}
+
+// One /api/skills payload → sorted list rows. Pure so the loader tests can
+// exercise it without React. Retains the immutable install identity fields
+// (commit + source coordinates) the platform reports for installed skills.
+export function mapSkillRows(data) {
+  return (Array.isArray(data?.skills) ? data.skills : [])
+    .map((s) => {
+      const id = String(s?.id ?? '')
+      const name = typeof s?.name === 'string' && s.name ? s.name : id
+      return {
+        id,
+        name,
+        title: skillDisplayTitle(name),
+        description: typeof s?.description === 'string' ? s.description : '',
+        provenance: typeof s?.provenance === 'string' ? s.provenance : '',
+        is_dir: !!s?.is_dir,
+        uses: Number(s?.uses_30d) || 0,
+        commit: typeof s?.commit === 'string' ? s.commit : null,
+        sourceRepo: typeof s?.source_repo === 'string' ? s.source_repo : null,
+        sourcePath: typeof s?.source_path === 'string' ? s.source_path : null,
+        sourceUrl: typeof s?.source_url === 'string' ? s.source_url : null,
+      }
+    })
+    .filter((s) => s.id)
+    .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()))
+}
+
+// Primary /api/skills loader with the same newest-generation-wins discipline
+// as createSystemPromptAppsLoader: initial load, manual refresh, and
+// post-install/-uninstall reloads may overlap, and an older response must
+// never overwrite a newer list or error state. load() resolves to
+//   { applied, ok, rows?, error? }
+// where applied=false means a newer request superseded this one (its caller
+// must change no state).
+export function createSkillsLoader({ fetchImpl }) {
+  let generation = 0
+
+  async function load(headers) {
+    const requestGeneration = ++generation
+    try {
+      const res = await fetchImpl('/api/skills', { headers })
+      if (!res?.ok) throw new Error(`list ${res?.status}`)
+      const rows = mapSkillRows(await res.json())
+      return { applied: requestGeneration === generation, ok: true, rows }
+    } catch (error) {
+      return { applied: requestGeneration === generation, ok: false, error }
+    }
   }
 
   function invalidate() {

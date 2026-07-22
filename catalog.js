@@ -32,6 +32,32 @@ export function sourceKey(source) {
   return `${source?.repo || ''}/${source?.path || ''}`
 }
 
+// Same shapes the backend installer/catalog accept.
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+const REF_RE = /^[A-Za-z0-9._/-]{1,100}$/
+
+// Bound + validate a sources.json override before anything renders or builds
+// URLs from it: malformed or hostile entries are dropped, the list is capped,
+// and every field is forced into the installer's repo/path/ref shapes.
+// Returns [] when nothing survives — the caller keeps DEFAULT_SOURCES.
+export function normalizeSources(raw, { max = 12 } = {}) {
+  const out = []
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (out.length >= max) break
+    if (!entry || typeof entry !== 'object') continue
+    const repo = String(entry.repo || '')
+    if (!REPO_RE.test(repo)) continue
+    const path = String(entry.path || '').replace(/^\/+|\/+$/g, '')
+    if (path.length > 200 || path.split('/').includes('..') || path.includes('\\')) continue
+    const ref = String(entry.ref || 'main')
+    if (!REF_RE.test(ref) || ref.includes('..')) continue
+    const label = String(entry.label || repo).replace(/\s+/g, ' ').trim().slice(0, 80)
+    const blurb = typeof entry.blurb === 'string' ? entry.blurb.slice(0, 200) : ''
+    out.push({ label, repo, path, ref, ...(blurb ? { blurb } : {}) })
+  }
+  return out
+}
+
 // One recursive git-trees call finds every SKILL.md in the repo — flat cards,
 // no folder drilling, no dead ends. This filters the raw tree down to skill
 // directories under the source's path prefix.
@@ -42,7 +68,12 @@ export function treeToSkills(tree, pathPrefix) {
     .filter((t) => typeof t?.path === 'string' && t.path.endsWith('/SKILL.md'))
     .map((t) => t.path.slice(0, -'/SKILL.md'.length))
     .filter((dir) => !prefix || dir === prefix || dir.startsWith(`${prefix}/`))
-    .map((dir) => ({ dir, name: dir.split('/').pop() }))
+    // `id` is what an install of this card will actually be named — compare
+    // installed-ness and duplicates against it, never the cased basename.
+    .map((dir) => {
+      const name = dir.split('/').pop()
+      return { dir, name, id: installIdOf(name) }
+    })
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
@@ -67,6 +98,8 @@ export function catalogSummary(text) {
 export const INSTALL_LIMITS = {
   maxFiles: 24,
   maxTotalBytes: 2 * 1024 * 1024,
+  // Maximum PATH SEGMENTS per resource, exactly the backend's
+  // _RESOURCE_MAX_DEPTH semantics (`a/b/c/file.md` = 4 segments = at the cap).
   maxDepth: 4,
   suffixes: ['.md', '.txt', '.json', '.yaml', '.yml', '.csv', '.py', '.js', '.ts',
     '.sh', '.toml', '.html', '.css'],
@@ -78,6 +111,27 @@ function suffixOf(path) {
   const base = path.split('/').pop() || ''
   const dot = base.lastIndexOf('.')
   return dot > 0 ? base.slice(dot).toLowerCase() : ''
+}
+
+// EXACT mirror of the backend's per-file rule (_resource_rel_ok): 1..4 plain
+// segments — none empty, dot-prefixed, or containing a backslash — plus the
+// suffix allowlist. The badge must never say "works" for a file the real
+// installer will drop.
+export function resourceRelOk(rel) {
+  const segments = String(rel || '').split('/')
+  if (segments.length < 1 || segments.length > INSTALL_LIMITS.maxDepth) return false
+  for (const seg of segments) {
+    if (!seg || seg.startsWith('.') || seg.includes('\\')) return false
+  }
+  return INSTALL_LIMITS.suffixes.includes(suffixOf(rel))
+}
+
+// What the installer will actually name a skill: lowercased basename (backend
+// _derive_name). Installed checks and duplicate detection must compare THIS,
+// or a `PDF/SKILL.md` card stays install-enabled after `pdf` is installed and
+// then 409s.
+export function installIdOf(name) {
+  return String(name || '').toLowerCase()
 }
 
 // Relative paths mentioned in SKILL.md — markdown links/images plus bare
@@ -116,9 +170,7 @@ export function assessCompat(tree, dir, raw) {
   const dropped = []
   for (const f of files) {
     if (/^skill\.md$/i.test(f.rel)) continue
-    const depthOk = f.rel.split('/').length - 1 <= INSTALL_LIMITS.maxDepth
-    const suffixOk = INSTALL_LIMITS.suffixes.includes(suffixOf(f.rel))
-    ;(depthOk && suffixOk ? kept : dropped).push(f)
+    ;(resourceRelOk(f.rel) ? kept : dropped).push(f)
   }
 
   // Install materializes resources in order and stops adding once over budget;
@@ -259,6 +311,48 @@ export function rawSkillUrl(source, dir, oid) {
 
 export function githubSkillUrl(source, dir, oid) {
   return `https://github.com/${source.repo}/blob/${oid || source.ref || 'main'}/${dir}/SKILL.md`
+}
+
+// Every installed file under shared/skills/<id>/, relative to the skill dir,
+// via the NON-recursive shared-list API (`fetchJson(url)` is injected with
+// auth by the caller and resolves to parsed JSON or null). Every path segment
+// is URL-encoded — installed names may contain '.', and resources anything
+// the installer allowed. Returns null ("no verdict") whenever the walk is
+// incomplete: a failed page, a paginated directory, a directory too deep to
+// enumerate, or the page budget running out with work left. Partial data must
+// never be assessed as the complete skill.
+export async function listInstalledFiles(fetchJson, id, {
+  maxPages = 16,
+  maxDepth = INSTALL_LIMITS.maxDepth,
+} = {}) {
+  const enc = (rel) => rel.split('/').map(encodeURIComponent).join('/')
+  const queue = ['']
+  const out = []
+  let pages = 0
+  while (queue.length) {
+    if (pages >= maxPages) return null
+    const sub = queue.shift()
+    pages += 1
+    const data = await fetchJson(
+      `/api/storage/shared-list/${enc(`skills/${id}${sub ? `/${sub}` : ''}`)}?limit=200`,
+    )
+    if (!data || !Array.isArray(data.entries)) return null
+    if (data.next_cursor) return null // a >200-entry directory: not walked whole
+    for (const e of data.entries) {
+      const name = String(e?.name || '')
+      if (!name) continue
+      const rel = sub ? `${sub}/${name}` : name
+      if (e.type === 'directory') {
+        // A dir whose FILES would exceed the depth cap can still hold content
+        // we won't see — that is an unknown, not an implicit "empty".
+        if (rel.split('/').length >= maxDepth) return null
+        queue.push(rel)
+      } else {
+        out.push(rel)
+      }
+    }
+  }
+  return out
 }
 
 // Monotonic generation guard for the catalog's async flows: every new scan

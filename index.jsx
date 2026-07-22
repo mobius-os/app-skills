@@ -7,17 +7,19 @@ import {
   friendlyLoadError,
   createDetailNav,
   createSystemPromptAppsLoader,
+  createSkillsLoader,
   installedAppDisplayName,
   skillContentPath,
   provenanceChip,
   isUninstallable,
-  skillDisplayTitle,
   usageLabel,
 } from './domain.js'
 import {
   DEFAULT_SOURCES,
   sourceKey,
+  normalizeSources,
   treeToSkills,
+  installIdOf,
   catalogSummary,
   resolveCommitUrl,
   commitOidOf,
@@ -29,6 +31,7 @@ import {
   createGenerationGuard,
   assessCompat,
   assessInstalled,
+  listInstalledFiles,
 } from './catalog.js'
 
 // Skills — browse, read, and grow the agent's skills (the SKILL-style markdown
@@ -151,6 +154,8 @@ const CSS = `
 .sk-prov.seed { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .sk-prov.installed { color: var(--success, #2e9e5b); border-color: color-mix(in srgb, var(--success, #2e9e5b) 55%, transparent); }
 .sk-uses { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.sk-srclink { font-size: 11px; font-weight: 600; color: var(--accent); text-decoration: none;
+  white-space: nowrap; }
 .sk-detailmeta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
   max-width: 720px; margin: 0 auto; padding: 14px 18px 0; }
 
@@ -262,7 +267,10 @@ const CSS = `
 .sk-cat-count { padding: 2px 16px 8px; font-size: 12.5px; color: var(--muted); }
 .sk-cards { padding: 0 12px 32px; }
 .sk-card { border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
-  padding: 12px 14px; margin-bottom: 10px; cursor: pointer; }
+  padding: 12px 14px; margin-bottom: 10px; }
+/* the card's open action — a real, focusable control (keyboard + SR reachable) */
+.sk-cardopen { display: block; width: 100%; text-align: left; background: none; border: none;
+  padding: 0; margin: 0; color: inherit; font-family: inherit; cursor: pointer; }
 .sk-card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; display: flex; align-items: center;
   gap: 8px; flex-wrap: wrap; word-break: break-word; }
 .sk-carddesc { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
@@ -339,9 +347,11 @@ function ProvChips({ provenance, uses, compat }) {
 
 // One catalog card. Summaries prefetch in the background after the source
 // scan; the IntersectionObserver only lets visible cards jump that queue (and
-// is the fallback when the pool is cancelled mid-run). Tapping a card opens
-// the full SKILL.md as its own page, like an installed skill.
-function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLoad, onInstall, onCaveats, onRetry }) {
+// is the fallback when the pool is cancelled mid-run). The open action is a
+// REAL button (name + summary are its accessible content), so keyboard users
+// can reach the skill page for every card, not just its Install control.
+// Exported for the a11y render test.
+export function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLoad, onInstall, onCaveats, onRetry }) {
   const ref = useRef(null)
 
   useEffect(() => {
@@ -355,16 +365,18 @@ function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLoad, onI
 
   const loaded = desc && desc !== 'loading' && desc !== 'failed'
   return (
-    <div ref={ref} className="sk-card" onClick={onOpen}>
-      <h3>
-        {skill.name}
-        {installed && <span className="sk-prov installed">installed</span>}
-      </h3>
-      <p className="sk-carddesc">
-        {loaded ? desc.description
-          : desc === 'failed' ? 'Could not load SKILL.md.'
-            : 'Loading summary…'}
-      </p>
+    <div ref={ref} className="sk-card">
+      <button type="button" className="sk-cardopen" onClick={onOpen}>
+        <h3>
+          {skill.name}
+          {installed && <span className="sk-prov installed">installed</span>}
+        </h3>
+        <p className="sk-carddesc">
+          {loaded ? desc.description
+            : desc === 'failed' ? 'Could not load SKILL.md.'
+              : 'Loading summary…'}
+        </p>
+      </button>
       <div className="sk-cardbtns">
         {/* Install arms only once the exact SKILL.md AND its compat verdict
             are in hand — a quick tap can never install unreviewed bytes. On a
@@ -434,11 +446,17 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
 
   useEffect(() => {
     // Sources are app data: a saved sources.json overrides the defaults, so
-    // "add this repo as a source" is a chat request, not a code change.
+    // "add this repo as a source" is a chat request, not a code change. The
+    // override is normalized before anything renders or builds URLs from it —
+    // ill-typed or hostile entries are dropped, and an override with nothing
+    // valid keeps the defaults.
     const storage = window.mobius?.storage
     if (storage && typeof storage.get === 'function') {
       Promise.resolve(storage.get('sources.json'))
-        .then((saved) => { if (Array.isArray(saved) && saved.length) setSources(saved) })
+        .then((saved) => {
+          const cleaned = normalizeSources(saved)
+          if (cleaned.length) setSources(cleaned)
+        })
         .catch(() => {})
     }
     return () => prefetcherRef.current?.cancel()
@@ -600,7 +618,9 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   }, [skillList, filter])
 
   const detailName = detailDir ? detailDir.split('/').pop() : null
-  const detailInstalled = detailName ? existingIds.has(detailName) : false
+  // Installed-ness compares the id an install would actually create
+  // (lowercased basename), matching the server's derivation.
+  const detailInstalled = detailName ? existingIds.has(installIdOf(detailName)) : false
   const detailEntry = detailDir ? descs[detailDir] : null
   const detailLoaded = detailEntry && detailEntry !== 'loading' && detailEntry !== 'failed'
   const detailHtml = useMemo(() => {
@@ -636,12 +656,13 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
     if (detailDir && compat && !compat.ok) setShowCaveats(true)
   }, [detailDir, compat])
 
-  // Links in a catalog SKILL.md: external → new tab; anything else (relative
-  // resource paths we haven't fetched) is blocked so the app stays mounted.
+  // Links in a catalog SKILL.md: external → new tab; relative refs are the
+  // (not-yet-installed) skill's own bundled resources — blocked so the app
+  // stays mounted, never misread as other skills.
   function onDetailClick(e) {
     const a = e.target.closest && e.target.closest('a')
     if (!a) return
-    const link = classifyLink(a.getAttribute('href'))
+    const link = classifyLink(a.getAttribute('href'), { dirSkill: true })
     if (link.kind === 'anchor') return
     e.preventDefault()
     if (link.kind === 'external') window.open(link.url, '_blank', 'noopener,noreferrer')
@@ -793,7 +814,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                       key={s.dir}
                       skill={s}
                       desc={descs[s.dir]}
-                      installed={existingIds.has(s.name)}
+                      installed={existingIds.has(s.id)}
                       busy={busyDir === s.dir}
                       compat={compatByDir[s.dir] || null}
                       onOpen={() => openSkillPage(s.dir)}
@@ -838,6 +859,7 @@ export default function SkillsApp({ appId, token }) {
   const [online, setOnline] = useState(initialOnline)
   const [instCompat, setInstCompat] = useState({}) // id -> assessInstalled verdict (installed:* skills)
   const [showInstCaveats, setShowInstCaveats] = useState(false)
+  const [linkNotice, setLinkNotice] = useState(null) // tapped bundled-resource link
   const mainScrollRef = useRef(null)
   const mainListScrollRef = useRef(0) // list offset, restored when a detail closes
   // The detail back-sentinel state machine (in domain.js so it is unit-testable
@@ -876,6 +898,12 @@ export default function SkillsApp({ appId, token }) {
       onApps: setSystemPromptApps,
     })
   }
+  const skillsLoaderRef = useRef(null)
+  if (!skillsLoaderRef.current) {
+    skillsLoaderRef.current = createSkillsLoader({
+      fetchImpl: (...args) => fetch(...args),
+    })
+  }
 
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token])
 
@@ -884,48 +912,35 @@ export default function SkillsApp({ appId, token }) {
   // error empty state is reserved for the very first load (skills === null).
   async function load({ isRefresh = false } = {}) {
     // Fire-and-forget by construction: Refresh completion depends only on the
-    // skills request. The loader commits [] on every apps failure and ignores
-    // stale generations when refreshes overlap.
+    // skills request. Both loaders ignore stale generations when requests
+    // overlap — an older /api/skills response can never overwrite a newer
+    // list, error state, or the app_ready count.
     systemPromptAppsLoaderRef.current.load(authHeaders)
-    try {
-      // One metadata call replaces the old per-file storage crawl — and unlike
-      // a directory listing it includes directory-shaped skills, provenance,
-      // and usage. Full markdown is fetched lazily when a detail opens.
-      const res = await fetch('/api/skills', { headers: authHeaders })
-      if (!res.ok) throw new Error(`list ${res.status}`)
-      const data = await res.json()
-      const rows = (Array.isArray(data?.skills) ? data.skills : [])
-        .map((s) => {
-          const id = String(s?.id ?? '')
-          const name = typeof s?.name === 'string' && s.name ? s.name : id
-          return {
-            id,
-            name,
-            title: skillDisplayTitle(name),
-            description: typeof s?.description === 'string' ? s.description : '',
-            provenance: typeof s?.provenance === 'string' ? s.provenance : '',
-            is_dir: !!s?.is_dir,
-            uses: Number(s?.uses_30d) || 0,
-          }
-        })
-        .filter((s) => s.id)
-      rows.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()))
-      setSkills(rows)
+    const result = await skillsLoaderRef.current.load(authHeaders)
+    if (!result.applied) return // superseded — the newer request's outcome wins
+    if (result.ok) {
+      setSkills(result.rows)
       setLoadError(null)
       if (!readySignalledRef.current) {
         readySignalledRef.current = true
-        window.mobius?.signal?.('app_ready', { item_count: rows.length })
+        window.mobius?.signal?.('app_ready', { item_count: result.rows.length })
       }
-    } catch (err) {
-      setLoadError(friendlyLoadError(err))
-      window.mobius?.signal?.('error', { message: String(err?.message || err), source: isRefresh ? 'refresh' : 'load' })
+    } else {
+      setLoadError(friendlyLoadError(result.error))
+      window.mobius?.signal?.('error', {
+        message: String(result.error?.message || result.error),
+        source: isRefresh ? 'refresh' : 'load',
+      })
       // Keep the last-known-good list intact; on the first load skills stays null.
     }
   }
 
   useEffect(() => {
     load()
-    return () => systemPromptAppsLoaderRef.current.invalidate()
+    return () => {
+      systemPromptAppsLoaderRef.current.invalidate()
+      skillsLoaderRef.current.invalidate()
+    }
   }, []) // the skills API has no subscribe(); refresh is explicit
 
   async function refresh() {
@@ -1009,31 +1024,16 @@ export default function SkillsApp({ appId, token }) {
       })
   }, [selected, skills])
 
-  // Every installed file under shared/skills/<id>/, relative to the skill dir.
-  // Bounded BFS over the non-recursive shared-list API — depth and page caps
-  // match the install bounds, so anything real fits well inside them.
-  async function listSkillFiles(id) {
-    const root = `skills/${encodeURIComponent(id)}`
-    const queue = ['']
-    const out = []
-    let pages = 0
-    while (queue.length && pages < 12) {
-      const sub = queue.shift()
-      pages += 1
-      const res = await fetch(`/api/storage/shared-list/${root}${sub ? `/${sub}` : ''}?limit=200`, { headers: authHeaders })
+  // Authed JSON fetch for the installed-files walk (listInstalledFiles in
+  // catalog.js owns the traversal, encoding, and completeness rules).
+  const fetchJson = async (url) => {
+    try {
+      const res = await fetch(url, { headers: authHeaders })
       if (!res.ok) return null
-      const data = await res.json().catch(() => null)
-      if (!Array.isArray(data?.entries)) return null
-      for (const e of data.entries) {
-        const rel = sub ? `${sub}/${e.name}` : String(e.name || '')
-        if (e.type === 'directory') {
-          if (rel.split('/').length <= 4) queue.push(rel)
-        } else {
-          out.push(rel)
-        }
-      }
+      return await res.json()
+    } catch {
+      return null
     }
-    return out
   }
 
   // Assess every installed:* skill in the background once the list loads, so
@@ -1051,7 +1051,7 @@ export default function SkillsApp({ appId, token }) {
           const res = await fetch(skillContentPath(s), { headers: authHeaders })
           if (!res.ok) continue
           const raw = await res.text()
-          const files = s.is_dir ? await listSkillFiles(s.id) : []
+          const files = s.is_dir ? await listInstalledFiles(fetchJson, s.id) : []
           if (files === null || stale) continue
           setContents((c) => (c[s.id] ? c : { ...c, [s.id]: { status: 'ready', text: raw } }))
           setInstCompat((m) => ({ ...m, [s.id]: assessInstalled(files, raw) }))
@@ -1075,7 +1075,7 @@ export default function SkillsApp({ appId, token }) {
     ;(async () => {
       let files = []
       if (isDir) {
-        files = await listSkillFiles(id)
+        files = await listInstalledFiles(fetchJson, id)
         if (files === null) return // listing failed — no verdict beats a wrong one
       }
       const verdict = assessInstalled(files, entry.text || '')
@@ -1086,7 +1086,9 @@ export default function SkillsApp({ appId, token }) {
 
   // Uninstall is a two-tap: first tap arms (danger ring + explainer), a second
   // within 4s executes. Modal confirms don't exist inside the sandboxed iframe.
-  useEffect(() => { setRemoveArmed(false); setRemoveError(null); setShowInstCaveats(false) }, [selected])
+  useEffect(() => {
+    setRemoveArmed(false); setRemoveError(null); setShowInstCaveats(false); setLinkNotice(null)
+  }, [selected])
   useEffect(() => {
     if (!removeArmed) return undefined
     const t = setTimeout(() => setRemoveArmed(false), 4000)
@@ -1108,8 +1110,11 @@ export default function SkillsApp({ appId, token }) {
     setRemoveError(null)
     try {
       await deleteSkill(current.id)
+      // The reload is AWAITED (removeBusy keeps the truthful pending state up)
+      // so the list behind the closing detail is already current — never a
+      // fire-and-forget refresh racing the close.
+      await load({ isRefresh: true })
       closeSkill()
-      load({ isRefresh: true })
     } catch (err) {
       setRemoveError(String(err?.message || err))
       window.mobius?.signal?.('error', { message: String(err?.message || err), source: 'skill_uninstall' })
@@ -1123,8 +1128,19 @@ export default function SkillsApp({ appId, token }) {
   function onDetailClick(e) {
     const a = e.target.closest && e.target.closest('a')
     if (!a) return
-    const link = classifyLink(a.getAttribute('href'))
+    // Inside a directory skill, relative links name that skill's own bundled
+    // files — never other top-level skills (that convention is flat-skill
+    // only, preserved below).
+    const link = classifyLink(a.getAttribute('href'), { dirSkill: !!current?.is_dir })
     if (link.kind === 'anchor') return // in-page fragment — harmless, leave default
+    if (link.kind === 'resource') {
+      e.preventDefault()
+      setLinkNotice(
+        `“${link.path}” is a file bundled inside this skill. The agent reads `
+        + 'it when using the skill — ask in chat if you want to see it.',
+      )
+      return
+    }
     if (link.kind === 'skill') {
       e.preventDefault()
       if (skills && skills.some((s) => s.id === link.slug)) {
@@ -1218,9 +1234,24 @@ export default function SkillsApp({ appId, token }) {
           <div className="sk-alert" role="status">Tap the bin again to remove “{current.id}”. Its bytes are saved to git history first.</div>
         )}
         {removeError && <div className="sk-alert is-error" role="alert">{removeError}</div>}
+        {linkNotice && !removeError && (
+          <div className="sk-alert" role="status">{linkNotice}</div>
+        )}
         <div className="sk-scroll" ref={mainScrollRef}>
           <div className="sk-detailmeta">
             <ProvChips provenance={current.provenance} uses={current.uses} />
+            {current.commit && current.sourceRepo && current.sourcePath && (
+              /* the exact reviewed+installed revision — same OID the catalog
+                 pinned at install time, straight from provenance */
+              <a
+                className="sk-srclink"
+                href={`https://github.com/${current.sourceRepo}/blob/${current.commit}/${current.sourcePath}/SKILL.md`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                source @ {current.commit.slice(0, 7)}
+              </a>
+            )}
             {compatInfo && (compatInfo.ok ? (
               <span className="sk-compat is-ok">✓ Works with Möbius</span>
             ) : (

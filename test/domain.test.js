@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import {
   parseSkill,
   classifyLink,
+  mapSkillRows,
+  createSkillsLoader,
   selectSystemPromptApps,
   fetchSystemPromptApps,
   createSystemPromptAppsLoader,
@@ -246,4 +248,74 @@ test('usageLabel: zero/invalid usage renders nothing, positive counts read natur
   assert.equal(usageLabel(undefined), '')
   assert.equal(usageLabel(-2), '')
   assert.equal(usageLabel(7), '7× in 30d')
+})
+
+// --- classifyLink inside directory skills: relative links are resources ---
+
+test('classifyLink(dirSkill): relative refs are bundled resources, not skill slugs', () => {
+  assert.deepEqual(
+    classifyLink('reference.md', { dirSkill: true }),
+    { kind: 'resource', path: 'reference.md' },
+  )
+  assert.deepEqual(
+    classifyLink('./scripts/fill.py', { dirSkill: true }),
+    { kind: 'resource', path: 'scripts/fill.py' },
+  )
+  assert.equal(classifyLink('../escape.md', { dirSkill: true }).kind, 'blocked')
+  assert.equal(classifyLink('/abs/path.md', { dirSkill: true }).kind, 'blocked')
+  // Anchors and external links keep their normal classification.
+  assert.equal(classifyLink('#section', { dirSkill: true }).kind, 'anchor')
+  assert.equal(classifyLink('https://x.test/a', { dirSkill: true }).kind, 'external')
+  // Legacy flat skills preserve the cross-skill slug convention.
+  assert.deepEqual(classifyLink('other.md'), { kind: 'skill', slug: 'other' })
+})
+
+// --- mapSkillRows: shape, sorting, and retained install identity ---
+
+test('mapSkillRows sorts by title and retains commit/source identity fields', () => {
+  const rows = mapSkillRows({ skills: [
+    { id: 'zeta', name: 'zeta', description: 'z', provenance: 'seed', is_dir: false, uses_30d: 2 },
+    { id: 'pdf', name: 'pdf', description: 'p', provenance: 'installed:o/r', is_dir: true,
+      uses_30d: 0, commit: 'a'.repeat(40), source_repo: 'o/r', source_path: 'skills/pdf' },
+    { id: '', name: 'dropped' },
+  ] })
+  assert.deepEqual(rows.map((r) => r.id), ['pdf', 'zeta'])
+  assert.equal(rows[0].commit, 'a'.repeat(40))
+  assert.equal(rows[0].sourceRepo, 'o/r')
+  assert.equal(rows[0].sourcePath, 'skills/pdf')
+  assert.equal(rows[1].commit, null)
+})
+
+// --- createSkillsLoader: newest-generation-wins for the primary list ---
+
+test('createSkillsLoader: a slow older response reports applied=false', async () => {
+  const gates = []
+  const fetchImpl = () => new Promise((resolve) => {
+    gates.push(() => resolve({
+      ok: true,
+      json: async () => ({ skills: [{ id: `req-${gates.length}`, name: 'x' }] }),
+    }))
+  })
+  const loader = createSkillsLoader({ fetchImpl })
+  const first = loader.load({})
+  const second = loader.load({})
+  gates[1]() // the NEWER request resolves first…
+  const b = await second
+  assert.equal(b.applied, true)
+  gates[0]() // …and the older one must not be applied
+  const a = await first
+  assert.equal(a.applied, false)
+  assert.equal(a.ok, true) // it succeeded — it is just superseded
+})
+
+test('createSkillsLoader: errors are also generation-gated and invalidate() supersedes', async () => {
+  let reject
+  const fetchImpl = () => new Promise((_, rej) => { reject = rej })
+  const loader = createSkillsLoader({ fetchImpl })
+  const p = loader.load({})
+  loader.invalidate()
+  reject(new Error('boom'))
+  const res = await p
+  assert.equal(res.ok, false)
+  assert.equal(res.applied, false) // stale failure cannot overwrite newer state
 })
