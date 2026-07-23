@@ -19,6 +19,8 @@ import {
   installIdOf,
   normalizeSources,
   listInstalledFiles,
+  installability,
+  BLOCKING_CAVEATS,
 } from '../catalog.js'
 
 // Regression tests for the catalog core. Portable: no absolute paths, no
@@ -488,6 +490,62 @@ test('assessCompat: a SKILL.md over the 256 KiB fetch cap is flagged (not false-
   const c = over.caveats.find((x) => x.kind === 'skill-too-large')
   assert.ok(c, 'expected a skill-too-large caveat')
   assert.equal(over.caveats[0].kind, 'skill-too-large') // most serious first
+})
+
+// --- installability: the single closed result the Install control derives from ---
+
+test('installability: an over-cap SKILL.md is unsupported, not amber-but-runnable', () => {
+  // B1: a blocking compat caveat (the backend hard-rejects the fetch) must
+  // resolve to 'unsupported' with Install disabled — never a truthy-compat pass.
+  const tree = [blob(`${DIR}/SKILL.md`, 256 * 1024 + 1)]
+  const compat = assessCompat(tree, DIR, OK_MD)
+  assert.equal(compat.ok, false)
+  const inst = installability({ installable: true }, compat)
+  assert.equal(inst.status, 'unsupported')
+  assert.ok(inst.reason.length > 0)
+})
+
+test('installability: soft caveats (scripts, dropped, over-budget) stay installable', () => {
+  const tree = [blob(`${DIR}/SKILL.md`), blob(`${DIR}/scripts/run.py`)]
+  const compat = assessCompat(tree, DIR, OK_MD)
+  assert.equal(compat.ok, false) // has a 'scripts' caveat
+  assert.equal(installability({ installable: true }, compat).status, 'installable')
+})
+
+test('installability: loading until compat is known, then installable when clean', () => {
+  assert.equal(installability({ installable: true }, null).status, 'loading')
+  const clean = assessCompat([blob(`${DIR}/SKILL.md`)], DIR, OK_MD)
+  assert.equal(installability({ installable: true }, clean).status, 'installable')
+})
+
+test('installability: an invalid or colliding id is unsupported regardless of compat', () => {
+  const clean = assessCompat([blob(`${DIR}/SKILL.md`)], DIR, OK_MD)
+  const collision = installability({ installable: false, collision: true, id: 'pdf' }, clean)
+  assert.equal(collision.status, 'unsupported')
+  assert.equal(collision.chip, 'Duplicate id')
+  const badName = installability({ installable: false, collision: false, id: 'pdf' }, clean)
+  assert.equal(badName.status, 'unsupported')
+  assert.equal(badName.chip, 'Unsupported name')
+})
+
+test('BLOCKING_CAVEATS holds only the hard-reject kinds (skill-too-large)', () => {
+  assert.ok(BLOCKING_CAVEATS.has('skill-too-large'))
+  for (const soft of ['dropped', 'over-budget', 'scripts', 'frontmatter', 'broken-refs']) {
+    assert.equal(BLOCKING_CAVEATS.has(soft), false, soft)
+  }
+})
+
+test('installed-detail source link is built through the segment-encoding helper', () => {
+  // B3: the installed-view "source @" link now reuses githubSkillUrl (same
+  // encoder as the catalog), so a path with #, ?, or a space can't splice into
+  // a URL that points at different bytes.
+  const commit = '0'.repeat(40)
+  const url = githubSkillUrl({ repo: 'anthropics/skills' }, 'skills/a b#x', commit)
+  assert.equal(
+    url,
+    `https://github.com/anthropics/skills/blob/${commit}/skills/a%20b%23x/SKILL.md`,
+  )
+  assert.ok(!url.includes(' ') && !url.includes('#x'))
 })
 
 test('assessCompat: disallowed extensions and deep nesting are flagged as dropped', () => {

@@ -281,6 +281,36 @@ export function assessCompat(tree, dir, raw) {
   return { ok: caveats.length === 0, caveats }
 }
 
+// Caveats the backend treats as a HARD reject rather than a partial install:
+// the install cannot succeed at all, so the skill must present as unsupported
+// (Install disabled) — never an amber-but-runnable action. A SKILL.md over the
+// fetch cap is rejected outright by the installer; the rest (dropped resources,
+// over-budget, scripts, missing summary) still install, just partially.
+export const BLOCKING_CAVEATS = new Set(['skill-too-large'])
+
+// One closed installability result for a catalog entry — the SINGLE source the
+// Install control derives from, never the mere presence of a compat object:
+//   'loading'      compat verdict not computed yet
+//   'unsupported'  can never install cleanly (invalid/duplicate id, or a
+//                  blocking compat caveat from the same hard contract as the
+//                  backend) — Install disabled, with `reason`/`chip` to show
+//   'installable'  safe to offer
+export function installability(skill, compat) {
+  if (skill && skill.installable === false) {
+    return {
+      status: 'unsupported',
+      reason: skill.collision
+        ? `Another directory in this source also installs as "${skill.id}", so neither can be installed cleanly — ask the agent to pick one.`
+        : 'This name isn’t valid for a Möbius skill (lowercase letters, digits, and . _ - only), so it can’t be installed here.',
+      chip: skill.collision ? 'Duplicate id' : 'Unsupported name',
+    }
+  }
+  if (!compat) return { status: 'loading', reason: '', chip: '' }
+  const blocking = compat.caveats.find((c) => BLOCKING_CAVEATS.has(c.kind))
+  if (blocking) return { status: 'unsupported', reason: blocking.text, chip: 'Too large' }
+  return { status: 'installable', reason: '', chip: '' }
+}
+
 // Both flat parsers (here and backend) read only `key: value` scalars, so a
 // YAML block scalar (`description: >`) leaves just the indicator behind.
 function frontmatterCaveat(raw) {

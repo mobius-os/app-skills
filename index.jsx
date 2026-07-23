@@ -31,7 +31,7 @@ import {
   createGenerationGuard,
   assessCompat,
   assessInstalled,
-  listInstalledFiles,
+  installability,
 } from './catalog.js'
 
 // Skills — browse, read, and grow the agent's skills (the SKILL-style markdown
@@ -375,14 +375,12 @@ export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, onO
   }, [desc])
 
   const loaded = desc && desc !== 'loading' && desc !== 'failed'
-  // A card whose derived id violates the backend name contract, or collides
-  // with another directory normalizing to the same id, can never install
-  // cleanly — render it explicitly unsupported with Install disabled rather
-  // than offering an install that 400s or races its twin.
-  const installable = skill.installable !== false
-  const unsupportedReason = skill.collision
-    ? `Another directory in this source also installs as "${skill.id}", so neither can be installed cleanly — ask the agent to pick one.`
-    : 'This name isn’t valid for a Möbius skill (lowercase letters, digits, and . _ - only), so it can’t be installed here.'
+  // One closed installability result: an id that violates the name contract or
+  // collides with a twin, OR a blocking compat caveat (a SKILL.md over the hard
+  // fetch cap the backend rejects), makes this 'unsupported' — Install disabled,
+  // not an amber-but-runnable action. Every control below derives from `inst`.
+  const inst = installability(skill, compat)
+  const supported = inst.status !== 'unsupported'
   return (
     <div ref={ref} className="sk-card">
       <button type="button" className="sk-cardopen" onClick={onOpen}>
@@ -404,20 +402,21 @@ export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, onO
           className="sk-btn"
           // `anyBusy` (an install of ANY card in flight) disables the rest, so
           // installs never overlap — a completing install can't re-enable a
-          // sibling that a stale write is about to touch.
-          disabled={anyBusy || installed || !installable || !loaded || !compat}
+          // sibling that a stale write is about to touch. Enabled ONLY when the
+          // closed result says installable (compat known, no blocking caveat).
+          disabled={anyBusy || installed || inst.status !== 'installable' || !loaded}
           onClick={(e) => { e.stopPropagation(); onInstall() }}
           title={
-            !installable ? unsupportedReason
+            inst.status === 'unsupported' ? inst.reason
               : installed ? 'Already in your agent’s skills'
-                : !loaded || !compat ? 'Install unlocks once the skill has loaded'
+                : inst.status === 'loading' || !loaded ? 'Install unlocks once the skill has loaded'
                   : anyBusy ? 'Another skill is installing…'
                     : 'Install this skill for your agent'
           }
         >
-          {!installable ? 'Unsupported' : installed ? 'Installed' : busy ? 'Installing…' : 'Install'}
+          {inst.status === 'unsupported' ? 'Unsupported' : installed ? 'Installed' : busy ? 'Installing…' : 'Install'}
         </button>
-        {desc === 'failed' && installable && (
+        {desc === 'failed' && supported && (
           <button
             className="sk-btn ghost"
             onClick={(e) => { e.stopPropagation(); onRetry() }}
@@ -425,9 +424,9 @@ export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, onO
             Retry
           </button>
         )}
-        {!installable ? (
-          <span className="sk-compat is-warn" title={unsupportedReason}>
-            ⚠ {skill.collision ? 'Duplicate id' : 'Unsupported name'}
+        {inst.status === 'unsupported' ? (
+          <span className="sk-compat is-warn" title={inst.reason}>
+            ⚠ {inst.chip}
           </span>
         ) : compat && (compat.ok ? (
           <span className="sk-compat is-ok">✓ Works with Möbius</span>
@@ -457,7 +456,6 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   const [detailDir, setDetailDir] = useState(null) // dir open as a full page
   const [showCaveats, setShowCaveats] = useState(false)
   const [busyDir, setBusyDir] = useState(null)
-  const [installedLocally, setInstalledLocally] = useState(() => new Set()) // ids just installed this session
   const [scanBusy, setScanBusy] = useState(false)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
@@ -634,14 +632,14 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || `install failed (${res.status})`)
-      // Mark installed optimistically so the card settles to "Installed" (and
-      // stays disabled) even if the parent reconciliation reload later fails.
-      if (data.name) setInstalledLocally((s) => new Set(s).add(data.name))
       window.mobius?.signal?.('skill_installed', { slug: data.name, source: source.repo })
-      // AWAIT the authoritative reconciliation; busyDir stays set through it, so
-      // the action can never re-enable mid-settlement (a fire-and-forget reload
-      // would leave the card tappable-and-saying-Install until the list caught
-      // up, or forever if it failed).
+      // AWAIT the authoritative reconciliation before clearing busy: the single
+      // installed-id set lives at the app root (existingIds, from /api/skills),
+      // and this refresh is what updates it. busyDir stays set through the await,
+      // so the card shows "Installing…" — never a tappable "Install" — until the
+      // authoritative list reflects the new skill. No session-local overlay: a
+      // set that only grows is exactly what lets a card claim "Installed" after
+      // the skill was uninstalled elsewhere.
       await onInstalled()
       if (guardRef.current.isCurrent(opToken)) {
         setNotice(`Installed "${data.name}" — it's in your agent's skills now.`)
@@ -665,19 +663,14 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
 
   const detailName = detailDir ? detailDir.split('/').pop() : null
   const detailSkill = detailDir && skillList ? skillList.find((s) => s.dir === detailDir) : null
-  // A card whose id is invalid or collides can be opened/read but never
-  // installed — the detail Install button mirrors the card's rule.
-  const detailInstallable = detailSkill ? detailSkill.installable !== false : true
-  const detailUnsupportedReason = detailSkill?.collision
-    ? `Another directory in this source also installs as "${detailSkill.id}", so neither can be installed cleanly — ask the agent to pick one.`
-    : 'This name isn’t valid for a Möbius skill (lowercase letters, digits, and . _ - only), so it can’t be installed here.'
-  // Installed-ness compares the id an install would actually create
-  // (lowercased basename), matching the server's derivation. The session-local
-  // just-installed set bridges the moment between a successful install and the
-  // parent list reflecting it (and survives a failed reconciliation reload).
+  // Installed-ness compares the id an install would actually create (lowercased
+  // basename), matching the server's derivation, against the single root set —
+  // existingIds, derived from /api/skills and refreshed after every install and
+  // uninstall. No session-local overlay, so this never lies "Installed" about a
+  // skill that was removed elsewhere.
   const detailIdForInstalled = detailName ? installIdOf(detailName) : null
   const detailInstalled = detailIdForInstalled != null
-    && (existingIds.has(detailIdForInstalled) || installedLocally.has(detailIdForInstalled))
+    && existingIds.has(detailIdForInstalled)
   const detailEntry = detailDir ? descs[detailDir] : null
   const detailLoaded = detailEntry && detailEntry !== 'loading' && detailEntry !== 'failed'
   const detailHtml = useMemo(() => {
@@ -706,6 +699,9 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
     return out
   }, [open, skillList, descs])
   const compat = (detailDir && compatByDir[detailDir]) || null
+  // The detail Install button mirrors the card's rule from the same closed
+  // result: invalid/duplicate id or a blocking compat caveat -> unsupported.
+  const detailInst = installability(detailSkill, compat)
 
   // An amber verdict must be on screen BEFORE the first moment Install can be
   // tapped — the notes open themselves rather than waiting behind the chip.
@@ -749,9 +745,9 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
         </nav>
         {detailDir && open && (
           <div className="sk-detail-actions">
-            {!detailInstallable ? (
-              <span className="sk-compat is-warn" title={detailUnsupportedReason}>
-                ⚠ {detailSkill?.collision ? 'Duplicate id' : 'Unsupported name'}
+            {detailInst.status === 'unsupported' ? (
+              <span className="sk-compat is-warn" title={detailInst.reason}>
+                ⚠ {detailInst.chip}
               </span>
             ) : compat && (compat.ok ? (
               <span className="sk-compat is-ok">✓ Works with Möbius</span>
@@ -765,19 +761,20 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
               </button>
             ))}
             {/* Same arming rule as the cards: no install before the exact
-                SKILL.md and its verdict are on screen. */}
+                SKILL.md and its verdict are on screen, and never when the closed
+                result is anything but installable. */}
             <button
               className="sk-btn"
-              disabled={busyDir !== null || detailInstalled || !detailInstallable || !detailLoaded || !compat}
+              disabled={busyDir !== null || detailInstalled || detailInst.status !== 'installable' || !detailLoaded}
               onClick={() => install(open.source, detailDir)}
               title={
-                !detailInstallable ? detailUnsupportedReason
+                detailInst.status === 'unsupported' ? detailInst.reason
                   : detailInstalled ? 'Already in your agent’s skills'
-                    : !detailLoaded || !compat ? 'Install unlocks once the skill has loaded'
+                    : detailInst.status === 'loading' || !detailLoaded ? 'Install unlocks once the skill has loaded'
                       : 'Install this skill for your agent'
               }
             >
-              {!detailInstallable ? 'Unsupported' : detailInstalled ? 'Installed' : busyDir === detailDir ? 'Installing…' : 'Install'}
+              {detailInst.status === 'unsupported' ? 'Unsupported' : detailInstalled ? 'Installed' : busyDir === detailDir ? 'Installing…' : 'Install'}
             </button>
             <a
               className="sk-iconbtn"
@@ -876,7 +873,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                       key={s.dir}
                       skill={s}
                       desc={descs[s.dir]}
-                      installed={existingIds.has(s.id) || installedLocally.has(s.id)}
+                      installed={existingIds.has(s.id)}
                       busy={busyDir === s.dir}
                       anyBusy={busyDir !== null}
                       compat={compatByDir[s.dir] || null}
@@ -1107,18 +1104,6 @@ export default function SkillsApp({ appId, token }) {
       })
   }, [selected, skills])
 
-  // Authed JSON fetch for the installed-files walk (listInstalledFiles in
-  // catalog.js owns the traversal, encoding, and completeness rules).
-  const fetchJson = async (url) => {
-    try {
-      const res = await fetch(url, { headers: authHeaders })
-      if (!res.ok) return null
-      return await res.json()
-    } catch {
-      return null
-    }
-  }
-
   // Assess every installed:* skill in the background once the list loads, so
   // the chip shows on the top-level rows too — not only after opening one.
   // Sequential on purpose: a handful of installed skills at most, and the
@@ -1130,18 +1115,18 @@ export default function SkillsApp({ appId, token }) {
     let stale = false
     ;(async () => {
       for (const s of todo) {
+        // v2 and the platform API ship together, so an installed row always
+        // carries the authoritative `files` inventory. A row without it is a
+        // contract violation, not a legacy case to walk around with a partial
+        // shared-list crawl — skip it (no verdict beats a wrong one).
+        if (s.files == null) continue
         try {
           const res = await fetch(skillContentPath(s), { headers: authHeaders })
           if (!res.ok) continue
           const raw = await res.text()
-          // Prefer the authoritative installer inventory; fall back to the
-          // shared-list walk only when the row carries none (older installs).
-          const files = s.files != null
-            ? s.files
-            : s.is_dir ? await listInstalledFiles(fetchJson, s.id) : []
-          if (files === null || stale) continue
+          if (stale) return
           setContents((c) => (c[s.id] ? c : { ...c, [s.id]: { status: 'ready', text: raw } }))
-          setInstCompat((m) => ({ ...m, [s.id]: assessInstalled(files, raw) }))
+          setInstCompat((m) => ({ ...m, [s.id]: assessInstalled(s.files, raw) }))
         } catch { /* no verdict beats a wrong one */ }
         if (stale) return
       }
@@ -1152,25 +1137,16 @@ export default function SkillsApp({ appId, token }) {
   // Post-install compat for the open skill. installed:* provenance only —
   // seed and agent-authored skills are written against this instance and
   // routinely mention files elsewhere in /data, which would read as false
-  // alarms here.
+  // alarms here. Keyed off the authoritative `files` inventory only.
   useEffect(() => {
     if (!current || !isUninstallable(current.provenance)) return undefined
-    const { id, is_dir: isDir } = current
+    const { id } = current
     const entry = contents[id]
     if (entry?.status !== 'ready' || instCompat[id]) return undefined
-    let stale = false
-    ;(async () => {
-      let files = []
-      if (current.files != null) {
-        files = current.files // authoritative installer inventory
-      } else if (isDir) {
-        files = await listInstalledFiles(fetchJson, id)
-        if (files === null) return // listing failed — no verdict beats a wrong one
-      }
-      const verdict = assessInstalled(files, entry.text || '')
-      if (!stale) setInstCompat((m) => ({ ...m, [id]: verdict }))
-    })().catch(() => {})
-    return () => { stale = true }
+    if (current.files == null) return undefined // require the authoritative inventory
+    const verdict = assessInstalled(current.files, entry.text || '')
+    setInstCompat((m) => ({ ...m, [id]: verdict }))
+    return undefined
   }, [current, contents])
 
   // Uninstall is a two-tap: first tap arms (danger ring + explainer), a second
@@ -1335,10 +1311,12 @@ export default function SkillsApp({ appId, token }) {
             <ProvChips provenance={current.provenance} uses={current.uses} />
             {current.commit && current.sourceRepo && current.sourcePath && (
               /* the exact reviewed+installed revision — same OID the catalog
-                 pinned at install time, straight from provenance */
+                 pinned at install time, straight from provenance. Built through
+                 the one segment-encoding helper (like the catalog links), so a
+                 path with #, ?, spaces, etc. can't point at different bytes. */
               <a
                 className="sk-srclink"
-                href={`https://github.com/${current.sourceRepo}/blob/${current.commit}/${current.sourcePath}/SKILL.md`}
+                href={githubSkillUrl({ repo: current.sourceRepo }, current.sourcePath, current.commit)}
                 target="_blank"
                 rel="noopener noreferrer"
               >
