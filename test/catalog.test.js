@@ -212,10 +212,10 @@ test('prefetcher: bounds concurrency and still visits every dir', async () => {
       inflight -= 1
     },
   })
-  prefetcher.start(['a', 'b', 'c', 'd', 'e'])
-  await new Promise((resolve) => setTimeout(resolve, 50))
+  const result = await prefetcher.start(['a', 'b', 'c', 'd', 'e'])
   assert.deepEqual([...seen].sort(), ['a', 'b', 'c', 'd', 'e'])
   assert.ok(peak <= 2, `peak concurrency ${peak} exceeded the bound`)
+  assert.equal(result.completed, true)
 })
 
 test('prefetcher: a rejecting loadOne does not stall the pool', async () => {
@@ -227,8 +227,7 @@ test('prefetcher: a rejecting loadOne does not stall the pool', async () => {
       if (dir === 'bad') throw new Error('boom')
     },
   })
-  prefetcher.start(['bad', 'good'])
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await prefetcher.start(['bad', 'good'])
   assert.deepEqual(seen, ['bad', 'good'])
 })
 
@@ -243,13 +242,15 @@ test('prefetcher: starting a new pool strands the previous generation', async ()
       if (dir === 'old-1') await gate // old pool blocks until after the switch
     },
   })
-  prefetcher.start(['old-1', 'old-2'])
+  const oldDone = prefetcher.start(['old-1', 'old-2'])
   await new Promise((resolve) => setImmediate(resolve))
-  prefetcher.start(['new-1'])
+  const newDone = prefetcher.start(['new-1'])
   releaseFirst()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  const [oldResult, newResult] = await Promise.all([oldDone, newDone])
   assert.ok(seen.includes('new-1'))
   assert.ok(!seen.includes('old-2'), 'the superseded pool must not continue its queue')
+  assert.equal(oldResult.completed, false)
+  assert.equal(newResult.completed, true)
 })
 
 test('prefetcher: cancel() stops the pool without starting another', async () => {
@@ -263,12 +264,13 @@ test('prefetcher: cancel() stops the pool without starting another', async () =>
       if (dir === 'a') await gate
     },
   })
-  prefetcher.start(['a', 'b'])
+  const done = prefetcher.start(['a', 'b'])
   await new Promise((resolve) => setImmediate(resolve))
   prefetcher.cancel()
   release()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  const result = await done
   assert.deepEqual(seen, ['a'])
+  assert.equal(result.completed, false)
 })
 
 // --- resourceRelOk: EXACT mirror of the backend's _resource_rel_ok ---

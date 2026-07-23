@@ -176,6 +176,18 @@ export function mapSkillRows(data) {
     .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()))
 }
 
+// A confirmed mutation is authoritative even when the following list refresh
+// fails. Fold its canonical GET-shaped row into the one root-owned list; the
+// refresh then reconciles the rest of the world on top.
+export function mergeConfirmedSkill(rows, rawSkill) {
+  const [confirmed] = mapSkillRows({ skills: [rawSkill] })
+  if (!confirmed) return Array.isArray(rows) ? rows : []
+  return [
+    ...(Array.isArray(rows) ? rows.filter((row) => row.id !== confirmed.id) : []),
+    confirmed,
+  ].sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()))
+}
+
 // Primary /api/skills loader with the same newest-generation-wins discipline
 // as createSystemPromptAppsLoader: initial load, manual refresh, and
 // post-install/-uninstall reloads may overlap, and an older response must

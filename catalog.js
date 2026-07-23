@@ -480,6 +480,8 @@ export function createGenerationGuard() {
 // mid-prefetch strands the stale workers instead of racing them; cancel()
 // stops without starting a new pool. `loadOne` must dedupe by dir itself —
 // viewport-priority loads from the cards may race the pool.
+// start() returns a completion promise for deterministic tests/diagnostics;
+// rendering callers intentionally do not await background work.
 export function createSummaryPrefetcher({ loadOne, concurrency = 5 }) {
   let generation = 0
 
@@ -487,16 +489,21 @@ export function createSummaryPrefetcher({ loadOne, concurrency = 5 }) {
     const gen = ++generation
     const queue = Array.isArray(dirs) ? [...dirs] : []
     let next = 0
-    const worker = () => {
-      if (gen !== generation) return
-      const dir = queue[next++]
-      if (dir === undefined) return
-      Promise.resolve()
-        .then(() => loadOne(dir))
-        .then(worker, worker)
+    const worker = async () => {
+      while (gen === generation) {
+        const dir = queue[next++]
+        if (dir === undefined) return
+        try {
+          await loadOne(dir)
+        } catch {
+          // One bad preview must not stall the rest of the bounded pool.
+        }
+      }
     }
     const workers = Math.min(concurrency, queue.length)
-    for (let k = 0; k < workers; k++) worker()
+    return Promise.all(
+      Array.from({ length: workers }, () => worker()),
+    ).then(() => ({ completed: gen === generation }))
   }
 
   function cancel() {

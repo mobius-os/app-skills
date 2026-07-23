@@ -8,6 +8,7 @@ import {
   createDetailNav,
   createSystemPromptAppsLoader,
   createSkillsLoader,
+  mergeConfirmedSkill,
   installedAppDisplayName,
   skillContentPath,
   provenanceChip,
@@ -632,17 +633,14 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || `install failed (${res.status})`)
-      window.mobius?.signal?.('skill_installed', { slug: data.name, source: source.repo })
-      // AWAIT the authoritative reconciliation before clearing busy: the single
-      // installed-id set lives at the app root (existingIds, from /api/skills),
-      // and this refresh is what updates it. busyDir stays set through the await,
-      // so the card shows "Installing…" — never a tappable "Install" — until the
-      // authoritative list reflects the new skill. No session-local overlay: a
-      // set that only grows is exactly what lets a card claim "Installed" after
-      // the skill was uninstalled elsewhere.
-      await onInstalled()
+      if (!data?.skill?.id) throw new Error('install succeeded without a skill result')
+      window.mobius?.signal?.('skill_installed', { slug: data.skill.id, source: source.repo })
+      // The confirmed mutation updates the root-owned list first, then the
+      // awaited refresh reconciles every other skill. If that refresh fails,
+      // the successful install remains visible and cannot be repeated.
+      await onInstalled(data.skill)
       if (guardRef.current.isCurrent(opToken)) {
-        setNotice(`Installed "${data.name}" — it's in your agent's skills now.`)
+        setNotice(`Installed "${data.skill.name}" — it's in your agent's skills now.`)
       }
     } catch (e) {
       if (guardRef.current.isCurrent(opToken)) setError(String(e?.message || e))
@@ -1023,6 +1021,11 @@ export default function SkillsApp({ appId, token }) {
       refreshCountRef.current -= 1
       if (refreshCountRef.current === 0) setRefreshing(false)
     }
+  }
+
+  async function acceptInstalledSkill(rawSkill) {
+    setSkills((rows) => mergeConfirmedSkill(rows, rawSkill))
+    return load({ isRefresh: true })
   }
 
   // React reuses the scroller DOM node when the list swaps to the detail tree
@@ -1503,7 +1506,7 @@ export default function SkillsApp({ appId, token }) {
           visible={catalogOpen}
           authHeaders={authHeaders}
           existingIds={existingIds}
-          onInstalled={() => load({ isRefresh: true })}
+          onInstalled={acceptInstalledSkill}
           onClose={closeCatalog}
         />
       )}

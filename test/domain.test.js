@@ -4,6 +4,7 @@ import {
   parseSkill,
   classifyLink,
   mapSkillRows,
+  mergeConfirmedSkill,
   createSkillsLoader,
   selectSystemPromptApps,
   fetchSystemPromptApps,
@@ -296,6 +297,33 @@ test('mapSkillRows carries the authoritative installer files inventory (or null)
   // A malformed (non-array) files field degrades to null, never a bad verdict.
   const [bad] = mapSkillRows({ skills: [{ id: 'c', name: 'c', files: 'oops' }] })
   assert.equal(bad.files, null)
+})
+
+test('mergeConfirmedSkill makes a successful install authoritative before refresh', () => {
+  const existing = mapSkillRows({ skills: [
+    { id: 'alpha', name: 'Alpha', provenance: 'seed' },
+  ] })
+  const merged = mergeConfirmedSkill(existing, {
+    id: 'pdf',
+    name: 'PDF',
+    description: 'Read PDFs',
+    provenance: 'installed:anthropics/skills',
+    is_dir: true,
+    files: ['SKILL.md'],
+  })
+  assert.deepEqual(merged.map((row) => row.id), ['alpha', 'pdf'])
+  assert.equal(merged[1].provenance, 'installed:anthropics/skills')
+
+  const refreshed = mergeConfirmedSkill(merged, {
+    id: 'pdf',
+    name: 'PDF tools',
+    description: 'Updated canonical row',
+    provenance: 'installed:anthropics/skills',
+    is_dir: true,
+    files: ['SKILL.md', 'references.md'],
+  })
+  assert.equal(refreshed.filter((row) => row.id === 'pdf').length, 1)
+  assert.equal(refreshed.find((row) => row.id === 'pdf').description, 'Updated canonical row')
 })
 
 // --- createSkillsLoader: newest-generation-wins for the primary list ---
