@@ -3,7 +3,7 @@
 // accepted only as an injected function, so parsing and load coordination can
 // be unit-tested without bundling react/marked/dompurify.
 
-function splitFrontmatter(content) {
+export function splitFrontmatter(content) {
   const text = content || ''
   const lines = text.split(/\r?\n/)
   if (lines[0]?.trim() !== '---') return { body: text, meta: {} }
@@ -67,7 +67,7 @@ export function parseSkill(name, content) {
 //   { kind: 'external', url } — an http/https link → open in a new browser tab
 //   { kind: 'anchor' }        — an in-page `#fragment` → harmless, leave default
 //   { kind: 'blocked', ... }  — anything else (other protocol, sub-path) → do not navigate
-export function classifyLink(href) {
+export function classifyLink(href, { dirSkill = false } = {}) {
   const raw = (href || '').trim()
   if (!raw) return { kind: 'blocked', reason: 'empty' }
   if (raw.startsWith('#')) return { kind: 'anchor' }
@@ -79,9 +79,19 @@ export function classifyLink(href) {
     // unsupported inside the sandbox — block it rather than navigate.
     return { kind: 'blocked', reason: 'protocol', scheme }
   }
-  // No scheme → a relative link. Only a same-folder `.md` (optionally `./name.md`)
-  // maps to another skill; a sub-path or bare relative link has no in-app target.
   const path = raw.split(/[?#]/)[0]
+  if (dirSkill) {
+    // Inside a `<id>/SKILL.md` directory skill, a relative link names a
+    // bundled RESOURCE of that same skill (reference.md, scripts/x.py) — the
+    // cross-skill slug convention belongs to legacy flat skills only.
+    const clean = path.replace(/^\.\//, '')
+    if (clean && !clean.startsWith('/') && !clean.split('/').includes('..')) {
+      return { kind: 'resource', path: clean }
+    }
+    return { kind: 'blocked', reason: 'relative', path }
+  }
+  // Flat skill → a same-folder `.md` (optionally `./name.md`) maps to another
+  // skill; a sub-path or bare relative link has no in-app target.
   const md = path.match(/^(?:\.\/)?([^/\\]+)\.md$/i)
   if (md) {
     let slug
@@ -135,10 +145,133 @@ export function createSystemPromptAppsLoader({ fetchImpl, onApps }) {
   return { load, invalidate }
 }
 
+// One /api/skills payload → sorted list rows. Pure so the loader tests can
+// exercise it without React. Retains the immutable install identity fields
+// (commit + source coordinates) the platform reports for installed skills.
+export function mapSkillRows(data) {
+  return (Array.isArray(data?.skills) ? data.skills : [])
+    .map((s) => {
+      const id = String(s?.id ?? '')
+      const name = typeof s?.name === 'string' && s.name ? s.name : id
+      return {
+        id,
+        name,
+        title: skillDisplayTitle(name),
+        description: typeof s?.description === 'string' ? s.description : '',
+        provenance: typeof s?.provenance === 'string' ? s.provenance : '',
+        is_dir: !!s?.is_dir,
+        uses: Number(s?.uses_30d) || 0,
+        commit: typeof s?.commit === 'string' ? s.commit : null,
+        sourceRepo: typeof s?.source_repo === 'string' ? s.source_repo : null,
+        sourcePath: typeof s?.source_path === 'string' ? s.source_path : null,
+        sourceUrl: typeof s?.source_url === 'string' ? s.source_url : null,
+        // The installer-owned bounded file inventory (relative paths incl.
+        // SKILL.md), authoritative and complete when present — preferred over
+        // the shared-list walk, which can silently omit names. null for skills
+        // with no such record (older installs, app/seed/agent skills).
+        files: Array.isArray(s?.files) ? s.files.map((f) => String(f)) : null,
+      }
+    })
+    .filter((s) => s.id)
+    .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()))
+}
+
+// A confirmed mutation is authoritative even when the following list refresh
+// fails. Fold its canonical GET-shaped row into the one root-owned list; the
+// refresh then reconciles the rest of the world on top.
+export function mergeConfirmedSkill(rows, rawSkill) {
+  const [confirmed] = mapSkillRows({ skills: [rawSkill] })
+  if (!confirmed) return Array.isArray(rows) ? rows : []
+  return [
+    ...(Array.isArray(rows) ? rows.filter((row) => row.id !== confirmed.id) : []),
+    confirmed,
+  ].sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()))
+}
+
+// Primary /api/skills loader with the same newest-generation-wins discipline
+// as createSystemPromptAppsLoader: initial load, manual refresh, and
+// post-install/-uninstall reloads may overlap, and an older response must
+// never overwrite a newer list or error state. load() resolves to
+//   { applied, ok, rows?, error? }
+// where applied=false means a newer request superseded this one (its caller
+// must change no state).
+export function createSkillsLoader({ fetchImpl }) {
+  let generation = 0
+
+  async function load(headers) {
+    const requestGeneration = ++generation
+    try {
+      const res = await fetchImpl('/api/skills', { headers })
+      if (!res?.ok) throw new Error(`list ${res?.status}`)
+      const rows = mapSkillRows(await res.json())
+      return { applied: requestGeneration === generation, ok: true, rows }
+    } catch (error) {
+      return { applied: requestGeneration === generation, ok: false, error }
+    }
+  }
+
+  function invalidate() {
+    generation += 1
+  }
+
+  return { load, invalidate }
+}
+
 export function installedAppDisplayName(app) {
   const name = typeof app?.name === 'string' ? app.name.trim() : ''
   const slug = typeof app?.slug === 'string' ? app.slug.trim() : ''
   return name || slug || 'Installed app'
+}
+
+// ---- v2: installed-list API + catalog screen helpers ----
+
+// GET /api/skills row → the shared-storage path serving its markdown. Flat
+// skills live at shared/skills/<id>.md, directory skills (the external
+// SKILL.md convention) at shared/skills/<id>/SKILL.md.
+export function skillContentPath(skill) {
+  const id = encodeURIComponent(String(skill?.id ?? ''))
+  return skill?.is_dir
+    ? `/api/storage/shared/skills/${id}/SKILL.md`
+    : `/api/storage/shared/skills/${id}.md`
+}
+
+// Provenance string from GET /api/skills → a chip the list can render.
+// `kind` is a stable CSS modifier; `label` is the visible text; `title` is the
+// hover/long-press explanation.
+export function provenanceChip(provenance) {
+  const p = typeof provenance === 'string' ? provenance.trim() : ''
+  if (p === 'seed') return { kind: 'seed', label: 'built-in', title: 'Shipped with Möbius' }
+  if (p === 'agent') return { kind: 'agent', label: 'agent-made', title: 'Authored by your agent' }
+  if (p.startsWith('app:')) {
+    const slug = p.slice('app:'.length)
+    return { kind: 'app', label: `app · ${slug}`, title: `Owned by the ${slug} app` }
+  }
+  if (p.startsWith('installed:')) {
+    const src = p.slice('installed:'.length)
+    return { kind: 'installed', label: src || 'installed', title: `Installed from ${src || 'the ecosystem'}` }
+  }
+  return { kind: 'other', label: p || 'unknown', title: p || 'Unknown origin' }
+}
+
+// Only skills recorded by the install API may be removed in-app; seeds, agent
+// files, and app-owned skills keep their own lifecycles.
+export function isUninstallable(provenance) {
+  return typeof provenance === 'string' && provenance.startsWith('installed:')
+}
+
+// API skill names are usually slugs; render a readable title without mangling
+// a name that already carries real casing or spacing.
+export function skillDisplayTitle(name) {
+  const n = typeof name === 'string' ? name.trim() : ''
+  if (!n) return 'Untitled skill'
+  if (/[A-Z ]/.test(n)) return n
+  return n.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+export function usageLabel(uses) {
+  const n = Number(uses)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  return `${n}× in 30d`
 }
 
 // Turn a developer-facing fetch error into copy the owner can act on.

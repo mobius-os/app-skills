@@ -1,20 +1,22 @@
 {
   "id": "skills",
   "name": "Skills",
-  "version": "1.1.2",
-  "description": "Browse and search your agent's skills — the SKILL.md guides that shape what it can do. Tap any skill to read it. Create or edit through the agent.",
+  "version": "2.0.0",
+  "description": "Browse and read your agent's skills, and grow them: install from public skill catalogs, or ask the agent to find the right one for you.",
   "author": "mobius-os",
   "license": "MIT",
   "homepage": "https://github.com/mobius-os/app-skills",
   "entry": "index.jsx",
   "icon": "icon.png",
   "source_files": [
-    "domain.js"
+    "domain.js",
+    "catalog.js"
   ],
   "offline_capable": false,
   "permissions": {
     "cross_app_access": "none",
-    "share_with_apps": "none"
+    "share_with_apps": "none",
+    "manage_skills": true
   },
   "runtime": {
     "imports": [
