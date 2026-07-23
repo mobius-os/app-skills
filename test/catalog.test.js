@@ -49,8 +49,8 @@ test('treeToSkills: keeps only SKILL.md dirs, sorted by name', () => {
     { path: 'skills/notes.md' },
   ]
   assert.deepEqual(treeToSkills(tree, ''), [
-    { dir: 'skills/artifacts', name: 'artifacts', id: 'artifacts' },
-    { dir: 'skills/pdf', name: 'pdf', id: 'pdf' },
+    { dir: 'skills/artifacts', name: 'artifacts', id: 'artifacts', installable: true },
+    { dir: 'skills/pdf', name: 'pdf', id: 'pdf', installable: true },
   ])
 })
 
@@ -60,14 +60,43 @@ test('treeToSkills: a path prefix scopes to that subtree (boundary-safe)', () =>
     { path: 'skills-extra/b/SKILL.md' },
     { path: 'other/c/SKILL.md' },
   ]
-  assert.deepEqual(treeToSkills(tree, 'skills'), [{ dir: 'skills/a', name: 'a', id: 'a' }])
+  assert.deepEqual(treeToSkills(tree, 'skills'), [
+    { dir: 'skills/a', name: 'a', id: 'a', installable: true },
+  ])
 })
 
 test('treeToSkills: tolerates malformed tree entries and a non-array input', () => {
   assert.deepEqual(treeToSkills(null, ''), [])
   assert.deepEqual(treeToSkills([{}, { path: 42 }, null, { path: 'x/SKILL.md' }], ''), [
-    { dir: 'x', name: 'x', id: 'x' },
+    { dir: 'x', name: 'x', id: 'x', installable: true },
   ])
+})
+
+test('treeToSkills: a name the installer would reject is non-installable', () => {
+  // Spaces, `#`, `?`, `%`, leading punctuation, and non-ASCII all violate the
+  // backend `^[a-z0-9][a-z0-9._-]*$` contract — the card must not offer an
+  // install that inevitably 400s.
+  for (const bad of ['Bad Skill', 'a#frag', 'a?q', 'a%2f', '-lead', 'café']) {
+    const [s] = treeToSkills([{ path: `skills/${bad}/SKILL.md` }], 'skills')
+    assert.equal(s.id, null, `${bad} → no install id`)
+    assert.equal(s.installable, false, `${bad} → not installable`)
+  }
+  // A clean lowercase name stays installable.
+  const [ok] = treeToSkills([{ path: 'skills/pdf/SKILL.md' }], 'skills')
+  assert.equal(ok.installable, true)
+})
+
+test('treeToSkills: two dirs normalizing to one id are a non-installable collision', () => {
+  const skills = treeToSkills(
+    [{ path: 'skills/PDF/SKILL.md' }, { path: 'skills/pdf/SKILL.md' }],
+    'skills',
+  )
+  assert.equal(skills.length, 2)
+  for (const s of skills) {
+    assert.equal(s.id, 'pdf')
+    assert.equal(s.installable, false, `${s.dir} collides → not installable`)
+    assert.equal(s.collision, true)
+  }
 })
 
 test('catalogSummary: frontmatter description wins; license and peek extracted', () => {
@@ -120,6 +149,29 @@ test('url builders: scan is scoped to the subtree and everything pins to the OID
   assert.equal(rawSkillUrl(src, 'skills/pdf', OID), `https://raw.githubusercontent.com/anthropics/skills/${OID}/skills/pdf/SKILL.md`)
   assert.equal(githubSkillUrl(src, 'skills/pdf', OID), `https://github.com/anthropics/skills/blob/${OID}/skills/pdf/SKILL.md`)
   assert.equal(githubSkillUrl({ ...src, ref: 'v2' }, 'skills/pdf'), 'https://github.com/anthropics/skills/blob/v2/skills/pdf/SKILL.md')
+})
+
+test('url builders percent-encode each path segment (preview == install target)', () => {
+  const src = { repo: 'o/r', path: 'skills' }
+  // `#`, `?`, `%`, space, and non-ASCII must be encoded per segment (the `/`
+  // separators survive) so the previewed/assessed URL is the one the backend —
+  // which quotes the same path — actually fetches.
+  assert.equal(
+    rawSkillUrl(src, 'skills/a#frag', OID),
+    `https://raw.githubusercontent.com/o/r/${OID}/skills/a%23frag/SKILL.md`,
+  )
+  assert.equal(
+    rawSkillUrl(src, 'skills/a?d=1', OID),
+    `https://raw.githubusercontent.com/o/r/${OID}/skills/a%3Fd%3D1/SKILL.md`,
+  )
+  assert.equal(
+    githubSkillUrl(src, 'skills/a b', OID),
+    `https://github.com/o/r/blob/${OID}/skills/a%20b/SKILL.md`,
+  )
+  assert.equal(
+    rawSkillUrl(src, 'skills/café', OID),
+    `https://raw.githubusercontent.com/o/r/${OID}/skills/caf%C3%A9/SKILL.md`,
+  )
 })
 
 test('commitOidOf accepts only a 40-hex sha', () => {
@@ -258,6 +310,13 @@ test('installIdOf lowercases like the server derivation; treeToSkills carries it
   assert.equal(skill.id, 'pdf') // installed checks compare THIS
 })
 
+test('installIdOf returns null for names the backend name contract rejects', () => {
+  for (const bad of ['Bad Skill', 'a#frag', 'a?q', 'a%2f', '-lead', '.dot', 'café', '']) {
+    assert.equal(installIdOf(bad), null, bad)
+  }
+  assert.equal(installIdOf('pdf-forms.v2'), 'pdf-forms.v2')
+})
+
 test('normalizeSources drops malformed entries, caps the list, keeps defaults-compatible shapes', () => {
   const good = { label: 'Ok', repo: 'o/r', path: 'skills', ref: 'main' }
   const out = normalizeSources([
@@ -278,6 +337,13 @@ test('normalizeSources drops malformed entries, caps the list, keeps defaults-co
   assert.equal(normalizeSources(oversized).length, 12)
   // Every default source survives its own validation.
   assert.equal(normalizeSources(DEFAULT_SOURCES).length, DEFAULT_SOURCES.length)
+})
+
+test('normalizeSources rejects a control character in the path (URL-builder safety)', () => {
+  assert.equal(normalizeSources([{ repo: 'o/r', path: 'a\u0000b' }]).length, 0)
+  assert.equal(normalizeSources([{ repo: 'o/r', path: 'a\u001fb' }]).length, 0)
+  // A legitimate hyphenated path is untouched.
+  assert.equal(normalizeSources([{ repo: 'o/r', path: 'sub-dir/skills' }]).length, 1)
 })
 
 // --- listInstalledFiles: encoded, complete-or-no-verdict traversal ---
@@ -411,6 +477,17 @@ test('assessCompat: clean prose skill is ok', () => {
   const res = assessCompat(tree, DIR, OK_MD)
   assert.equal(res.ok, true)
   assert.deepEqual(res.caveats, [])
+})
+
+test('assessCompat: a SKILL.md over the 256 KiB fetch cap is flagged (not false-green)', () => {
+  // Boundary: exactly at the cap is fine; one byte over is a caveat.
+  const cap = 256 * 1024
+  const atCap = assessCompat([blob(`${DIR}/SKILL.md`, cap)], DIR, OK_MD)
+  assert.equal(atCap.ok, true)
+  const over = assessCompat([blob(`${DIR}/SKILL.md`, cap + 1)], DIR, OK_MD)
+  const c = over.caveats.find((x) => x.kind === 'skill-too-large')
+  assert.ok(c, 'expected a skill-too-large caveat')
+  assert.equal(over.caveats[0].kind, 'skill-too-large') // most serious first
 })
 
 test('assessCompat: disallowed extensions and deep nesting are flagged as dropped', () => {

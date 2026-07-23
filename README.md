@@ -53,4 +53,3 @@ python "$SCRIPTS_DIR/register_app.py" skills \
 Then edit files in place; the watcher recompiles on save. Note that
 `register_app.py` does not apply manifest permissions — grant `manage_skills`
 through the platform when testing installs.
-

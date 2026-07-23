@@ -286,6 +286,18 @@ test('mapSkillRows sorts by title and retains commit/source identity fields', ()
   assert.equal(rows[1].commit, null)
 })
 
+test('mapSkillRows carries the authoritative installer files inventory (or null)', () => {
+  const [withFiles, withoutFiles] = mapSkillRows({ skills: [
+    { id: 'a', name: 'a', files: ['SKILL.md', 'scripts/fill.py'] },
+    { id: 'b', name: 'b' }, // no record → null, so the caller falls back to the walk
+  ] })
+  assert.deepEqual(withFiles.files, ['SKILL.md', 'scripts/fill.py'])
+  assert.equal(withoutFiles.files, null)
+  // A malformed (non-array) files field degrades to null, never a bad verdict.
+  const [bad] = mapSkillRows({ skills: [{ id: 'c', name: 'c', files: 'oops' }] })
+  assert.equal(bad.files, null)
+})
+
 // --- createSkillsLoader: newest-generation-wins for the primary list ---
 
 test('createSkillsLoader: a slow older response reports applied=false', async () => {

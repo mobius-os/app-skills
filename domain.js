@@ -165,6 +165,11 @@ export function mapSkillRows(data) {
         sourceRepo: typeof s?.source_repo === 'string' ? s.source_repo : null,
         sourcePath: typeof s?.source_path === 'string' ? s.source_path : null,
         sourceUrl: typeof s?.source_url === 'string' ? s.source_url : null,
+        // The installer-owned bounded file inventory (relative paths incl.
+        // SKILL.md), authoritative and complete when present — preferred over
+        // the shared-list walk, which can silently omit names. null for skills
+        // with no such record (older installs, app/seed/agent skills).
+        files: Array.isArray(s?.files) ? s.files.map((f) => String(f)) : null,
       }
     })
     .filter((s) => s.id)

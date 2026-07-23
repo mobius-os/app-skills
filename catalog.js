@@ -28,8 +28,11 @@ export const DEFAULT_SOURCES = [
     blurb: 'The big Hermes catalog — blockchain, research, media, agents, and more.' },
 ]
 
+// Includes `ref`: two sources sharing a repo+path but pinned to different refs
+// (e.g. `main` vs a tag) are distinct scans and must not share cache/React-key
+// state, or one ref's summaries could render under the other.
 export function sourceKey(source) {
-  return `${source?.repo || ''}/${source?.path || ''}`
+  return `${source?.repo || ''}/${source?.path || ''}@${source?.ref || 'main'}`
 }
 
 // Same shapes the backend installer/catalog accept.
@@ -48,7 +51,15 @@ export function normalizeSources(raw, { max = 12 } = {}) {
     const repo = String(entry.repo || '')
     if (!REPO_RE.test(repo)) continue
     const path = String(entry.path || '').replace(/^\/+|\/+$/g, '')
-    if (path.length > 200 || path.split('/').includes('..') || path.includes('\\')) continue
+    // Mirror the backend control-char check (catalog_index.normalize_sources):
+    // path text flows into URL builders, so a control character must not slip
+    // through even though the app also encodes segments downstream.
+    if (
+      path.length > 200 ||
+      path.split('/').includes('..') ||
+      path.includes('\\') ||
+      /[\u0000-\u001f]/.test(path)
+    ) continue
     const ref = String(entry.ref || 'main')
     if (!REF_RE.test(ref) || ref.includes('..')) continue
     const label = String(entry.label || repo).replace(/\s+/g, ' ').trim().slice(0, 80)
@@ -64,17 +75,36 @@ export function normalizeSources(raw, { max = 12 } = {}) {
 export function treeToSkills(tree, pathPrefix) {
   const prefix = String(pathPrefix || '').replace(/^\/+|\/+$/g, '')
   const entries = Array.isArray(tree) ? tree : []
-  return entries
+  const skills = entries
     .filter((t) => typeof t?.path === 'string' && t.path.endsWith('/SKILL.md'))
     .map((t) => t.path.slice(0, -'/SKILL.md'.length))
     .filter((dir) => !prefix || dir === prefix || dir.startsWith(`${prefix}/`))
     // `id` is what an install of this card will actually be named — compare
     // installed-ness and duplicates against it, never the cased basename.
+    // `installable` is false when the id violates the backend name contract
+    // (installIdOf → null), so such a card renders unsupported instead of
+    // firing an install that 400s.
     .map((dir) => {
       const name = dir.split('/').pop()
-      return { dir, name, id: installIdOf(name) }
+      const id = installIdOf(name)
+      return { dir, name, id, installable: id != null }
     })
-    .sort((a, b) => a.name.localeCompare(b.name))
+  // COLLISION: two distinct directories normalizing to one install id (e.g.
+  // `PDF/SKILL.md` + `pdf/SKILL.md`) can't be a trustworthy one-card→one-install
+  // mapping — before either installs both actions are live, and after one both
+  // read "Installed". Mark every colliding card non-installable so the owner
+  // resolves it deliberately rather than racing two installs of the same id.
+  const counts = new Map()
+  for (const s of skills) {
+    if (s.id != null) counts.set(s.id, (counts.get(s.id) || 0) + 1)
+  }
+  for (const s of skills) {
+    if (s.id != null && counts.get(s.id) > 1) {
+      s.installable = false
+      s.collision = true
+    }
+  }
+  return skills.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // A raw SKILL.md → what the card shows. Frontmatter `description` is the
@@ -98,6 +128,10 @@ export function catalogSummary(text) {
 export const INSTALL_LIMITS = {
   maxFiles: 24,
   maxTotalBytes: 2 * 1024 * 1024,
+  // The backend caps the fetched SKILL.md itself (manifest_contract.
+  // SKILL_MAX_BYTES = 256 KiB). A larger entry document doesn't install whole,
+  // so the badge must warn instead of showing a false green.
+  skillMaxBytes: 256 * 1024,
   // Maximum PATH SEGMENTS per resource, exactly the backend's
   // _RESOURCE_MAX_DEPTH semantics (`a/b/c/file.md` = 4 segments = at the cap).
   maxDepth: 4,
@@ -126,12 +160,21 @@ export function resourceRelOk(rel) {
   return INSTALL_LIMITS.suffixes.includes(suffixOf(rel))
 }
 
+// The backend skill-name contract (routes/skills._SKILL_NAME_OK): lowercase,
+// no leading punctuation, no traversal/space/markup. A derived id that doesn't
+// match is one the installer will 400, so it must never be presented as
+// installable.
+export const SKILL_ID_RE = /^[a-z0-9][a-z0-9._-]*$/
+
 // What the installer will actually name a skill: lowercased basename (backend
-// _derive_name). Installed checks and duplicate detection must compare THIS,
-// or a `PDF/SKILL.md` card stays install-enabled after `pdf` is installed and
-// then 409s.
+// _derive_name), but ONLY if it satisfies the name contract. Returns null for
+// a name the backend would reject (spaces, `#`, `?`, `%`, leading punctuation,
+// non-ASCII, …) so the card can be rendered unsupported with Install disabled
+// instead of offering an install that inevitably 400s. Installed checks and
+// duplicate detection compare THIS id, never the cased basename.
 export function installIdOf(name) {
-  return String(name || '').toLowerCase()
+  const id = String(name || '').toLowerCase()
+  return SKILL_ID_RE.test(id) ? id : null
 }
 
 // Relative paths mentioned in SKILL.md — markdown links/images plus bare
@@ -168,9 +211,25 @@ export function assessCompat(tree, dir, raw) {
 
   const kept = []
   const dropped = []
+  let skillBytes = 0
   for (const f of files) {
-    if (/^skill\.md$/i.test(f.rel)) continue
+    if (/^skill\.md$/i.test(f.rel)) { skillBytes = f.size; continue }
     ;(resourceRelOk(f.rel) ? kept : dropped).push(f)
+  }
+  // The tree blob size is the authoritative byte count; fall back to the raw
+  // text's UTF-8 length when the tree omits it.
+  if (!skillBytes && raw) {
+    skillBytes = typeof TextEncoder !== 'undefined'
+      ? new TextEncoder().encode(String(raw)).length
+      : String(raw).length
+  }
+  // Most serious: the entry document itself is over the fetch cap, so the
+  // instructions won't install whole.
+  if (skillBytes > INSTALL_LIMITS.skillMaxBytes) {
+    caveats.push({
+      kind: 'skill-too-large',
+      text: `Its SKILL.md is larger than Möbius's ${Math.round(INSTALL_LIMITS.skillMaxBytes / 1024)} KB limit (${(skillBytes / 1024).toFixed(0)} KB), so the instructions may not install completely.`,
+    })
   }
 
   // Install materializes resources in order and stops adding once over budget;
@@ -305,12 +364,28 @@ export function prefixTree(tree, pathPrefix) {
   )
 }
 
+// Percent-encode a repo-relative path, one segment at a time so the `/`
+// separators survive. The backend installer percent-encodes the same path
+// (routes/skills._raw_url uses quote(..., safe='/')); without matching that
+// here, a dir containing `#`, `?`, `%`, a space, or non-ASCII makes the app
+// preview/assess ONE URL while the install fetches a DIFFERENT path — breaking
+// the exact-preview/exact-install invariant even under a single pinned OID.
+// `repo` is already validated to a safe charset (REPO_RE) and keeps its `/`.
+export function encodePath(path) {
+  return String(path == null ? '' : path)
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')
+}
+
 export function rawSkillUrl(source, dir, oid) {
-  return `https://raw.githubusercontent.com/${source.repo}/${oid || source.ref || 'main'}/${dir}/SKILL.md`
+  const rev = encodePath(oid || source.ref || 'main')
+  return `https://raw.githubusercontent.com/${source.repo}/${rev}/${encodePath(dir)}/SKILL.md`
 }
 
 export function githubSkillUrl(source, dir, oid) {
-  return `https://github.com/${source.repo}/blob/${oid || source.ref || 'main'}/${dir}/SKILL.md`
+  const rev = encodePath(oid || source.ref || 'main')
+  return `https://github.com/${source.repo}/blob/${rev}/${encodePath(dir)}/SKILL.md`
 }
 
 // Every installed file under shared/skills/<id>/, relative to the skill dir,

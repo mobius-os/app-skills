@@ -202,7 +202,12 @@ const CSS = `
 
 /* detail */
 .sk-detail-head { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px;
-  padding: max(12px, env(safe-area-inset-top)) 12px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  flex-wrap: wrap; padding: max(12px, env(safe-area-inset-top)) 12px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+/* The action cluster (compat chip + Install + GitHub) stays together and drops
+   to its own row on a narrow viewport instead of overflowing horizontally
+   (measured clip at 320px). min-width lets the breadcrumb keep a usable width
+   rather than collapsing to zero as the actions squeeze it. */
+.sk-detail-actions { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sk-back { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 8px 12px 8px 8px;
   border-radius: 10px; border: none; background: none; color: var(--accent); font-family: var(--font);
   font-size: 15px; font-weight: 500; cursor: pointer; }
@@ -259,7 +264,7 @@ const CSS = `
 .sk-caveats.in-page { width: calc(100% - 36px); max-width: 684px; margin: 12px auto 0; box-sizing: border-box; }
 
 /* catalog breadcrumb chain — every ancestor segment is clickable */
-.sk-crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; }
+.sk-crumbs { flex: 1 1 140px; min-width: 120px; display: flex; align-items: center; gap: 6px; overflow: hidden; }
 .sk-crumb { border: none; background: none; padding: 0; font-family: var(--font); font-size: 14.5px;
   color: var(--accent); cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-crumb.cur { color: var(--text); font-weight: 700; cursor: default; }
@@ -321,6 +326,12 @@ const EXTERNAL = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 // exact install call); the owner just finishes this sentence.
 const FIND_DRAFT = "I want to find and install a new skill for my agent. Here's what I'm trying to do: "
 
+// How many card summaries to warm eagerly after a scan. A large catalog holds
+// hundreds of skills; prefetching all of them would fire hundreds of raw
+// fetches on open. The rest load lazily as the owner scrolls (CatalogCard's
+// IntersectionObserver), which also jumps the queue for anything on screen.
+const PREFETCH_MAX = 40
+
 function initialOnline() {
   if (typeof window !== 'undefined' && typeof window.mobius?.online === 'boolean') return window.mobius.online
   if (typeof navigator !== 'undefined') return navigator.onLine
@@ -351,7 +362,7 @@ function ProvChips({ provenance, uses, compat }) {
 // REAL button (name + summary are its accessible content), so keyboard users
 // can reach the skill page for every card, not just its Install control.
 // Exported for the a11y render test.
-export function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLoad, onInstall, onCaveats, onRetry }) {
+export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, onOpen, onLoad, onInstall, onCaveats, onRetry }) {
   const ref = useRef(null)
 
   useEffect(() => {
@@ -364,6 +375,14 @@ export function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLo
   }, [desc])
 
   const loaded = desc && desc !== 'loading' && desc !== 'failed'
+  // A card whose derived id violates the backend name contract, or collides
+  // with another directory normalizing to the same id, can never install
+  // cleanly — render it explicitly unsupported with Install disabled rather
+  // than offering an install that 400s or races its twin.
+  const installable = skill.installable !== false
+  const unsupportedReason = skill.collision
+    ? `Another directory in this source also installs as "${skill.id}", so neither can be installed cleanly — ask the agent to pick one.`
+    : 'This name isn’t valid for a Möbius skill (lowercase letters, digits, and . _ - only), so it can’t be installed here.'
   return (
     <div ref={ref} className="sk-card">
       <button type="button" className="sk-cardopen" onClick={onOpen}>
@@ -383,17 +402,22 @@ export function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLo
             failed fetch it stays disabled and Retry takes its place beside it. */}
         <button
           className="sk-btn"
-          disabled={busy || installed || !loaded || !compat}
+          // `anyBusy` (an install of ANY card in flight) disables the rest, so
+          // installs never overlap — a completing install can't re-enable a
+          // sibling that a stale write is about to touch.
+          disabled={anyBusy || installed || !installable || !loaded || !compat}
           onClick={(e) => { e.stopPropagation(); onInstall() }}
           title={
-            installed ? 'Already in your agent’s skills'
-              : !loaded || !compat ? 'Install unlocks once the skill has loaded'
-                : 'Install this skill for your agent'
+            !installable ? unsupportedReason
+              : installed ? 'Already in your agent’s skills'
+                : !loaded || !compat ? 'Install unlocks once the skill has loaded'
+                  : anyBusy ? 'Another skill is installing…'
+                    : 'Install this skill for your agent'
           }
         >
-          {installed ? 'Installed' : busy ? 'Installing…' : 'Install'}
+          {!installable ? 'Unsupported' : installed ? 'Installed' : busy ? 'Installing…' : 'Install'}
         </button>
-        {desc === 'failed' && (
+        {desc === 'failed' && installable && (
           <button
             className="sk-btn ghost"
             onClick={(e) => { e.stopPropagation(); onRetry() }}
@@ -401,7 +425,11 @@ export function CatalogCard({ skill, desc, installed, busy, compat, onOpen, onLo
             Retry
           </button>
         )}
-        {compat && (compat.ok ? (
+        {!installable ? (
+          <span className="sk-compat is-warn" title={unsupportedReason}>
+            ⚠ {skill.collision ? 'Duplicate id' : 'Unsupported name'}
+          </span>
+        ) : compat && (compat.ok ? (
           <span className="sk-compat is-ok">✓ Works with Möbius</span>
         ) : (
           <button
@@ -429,6 +457,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   const [detailDir, setDetailDir] = useState(null) // dir open as a full page
   const [showCaveats, setShowCaveats] = useState(false)
   const [busyDir, setBusyDir] = useState(null)
+  const [installedLocally, setInstalledLocally] = useState(() => new Set()) // ids just installed this session
   const [scanBusy, setScanBusy] = useState(false)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
@@ -556,7 +585,10 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
         loadOne: (dir) => loadDescription(source, dir, oid, token),
       })
       prefetcherRef.current = prefetcher
-      prefetcher.start(skills.map((s) => s.dir))
+      // Only warm the first screenful-plus; a big source (hundreds of skills)
+      // must not fire hundreds of raw fetches on open. The CatalogCard
+      // IntersectionObserver lazily loads the rest as the owner scrolls.
+      prefetcher.start(skills.slice(0, PREFETCH_MAX).map((s) => s.dir))
     } catch (e) {
       if (!guardRef.current.isCurrent(token)) return
       setError(String(e?.message || e))
@@ -584,6 +616,9 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   }
 
   const install = async (source, dir) => {
+    // The scan token this op belongs to: presentation (notice/error) is written
+    // back only if the owner is still on this same source view when it settles.
+    const opToken = open?.token
     setBusyDir(dir); setError(null); setNotice(null)
     try {
       // Install the exact revision that was previewed: the scan's pinned OID,
@@ -599,14 +634,25 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || `install failed (${res.status})`)
-      setNotice(`Installed "${data.name}" — it's in your agent's skills now.`)
+      // Mark installed optimistically so the card settles to "Installed" (and
+      // stays disabled) even if the parent reconciliation reload later fails.
+      if (data.name) setInstalledLocally((s) => new Set(s).add(data.name))
       window.mobius?.signal?.('skill_installed', { slug: data.name, source: source.repo })
-      onInstalled()
+      // AWAIT the authoritative reconciliation; busyDir stays set through it, so
+      // the action can never re-enable mid-settlement (a fire-and-forget reload
+      // would leave the card tappable-and-saying-Install until the list caught
+      // up, or forever if it failed).
+      await onInstalled()
+      if (guardRef.current.isCurrent(opToken)) {
+        setNotice(`Installed "${data.name}" — it's in your agent's skills now.`)
+      }
     } catch (e) {
-      setError(String(e?.message || e))
+      if (guardRef.current.isCurrent(opToken)) setError(String(e?.message || e))
       window.mobius?.signal?.('error', { message: String(e?.message || e), source: 'skill_install' })
     } finally {
-      setBusyDir(null)
+      // Clear the busy marker only if it still refers to THIS op — a later
+      // install of a different dir must not be re-enabled by this one finishing.
+      setBusyDir((cur) => (cur === dir ? null : cur))
     }
   }
 
@@ -618,9 +664,20 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   }, [skillList, filter])
 
   const detailName = detailDir ? detailDir.split('/').pop() : null
+  const detailSkill = detailDir && skillList ? skillList.find((s) => s.dir === detailDir) : null
+  // A card whose id is invalid or collides can be opened/read but never
+  // installed — the detail Install button mirrors the card's rule.
+  const detailInstallable = detailSkill ? detailSkill.installable !== false : true
+  const detailUnsupportedReason = detailSkill?.collision
+    ? `Another directory in this source also installs as "${detailSkill.id}", so neither can be installed cleanly — ask the agent to pick one.`
+    : 'This name isn’t valid for a Möbius skill (lowercase letters, digits, and . _ - only), so it can’t be installed here.'
   // Installed-ness compares the id an install would actually create
-  // (lowercased basename), matching the server's derivation.
-  const detailInstalled = detailName ? existingIds.has(installIdOf(detailName)) : false
+  // (lowercased basename), matching the server's derivation. The session-local
+  // just-installed set bridges the moment between a successful install and the
+  // parent list reflecting it (and survives a failed reconciliation reload).
+  const detailIdForInstalled = detailName ? installIdOf(detailName) : null
+  const detailInstalled = detailIdForInstalled != null
+    && (existingIds.has(detailIdForInstalled) || installedLocally.has(detailIdForInstalled))
   const detailEntry = detailDir ? descs[detailDir] : null
   const detailLoaded = detailEntry && detailEntry !== 'loading' && detailEntry !== 'failed'
   const detailHtml = useMemo(() => {
@@ -691,8 +748,12 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
           {detailDir && <span className="sk-crumb cur">{detailName}</span>}
         </nav>
         {detailDir && open && (
-          <>
-            {compat && (compat.ok ? (
+          <div className="sk-detail-actions">
+            {!detailInstallable ? (
+              <span className="sk-compat is-warn" title={detailUnsupportedReason}>
+                ⚠ {detailSkill?.collision ? 'Duplicate id' : 'Unsupported name'}
+              </span>
+            ) : compat && (compat.ok ? (
               <span className="sk-compat is-ok">✓ Works with Möbius</span>
             ) : (
               <button
@@ -707,15 +768,16 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                 SKILL.md and its verdict are on screen. */}
             <button
               className="sk-btn"
-              disabled={busyDir === detailDir || detailInstalled || !detailLoaded || !compat}
+              disabled={busyDir !== null || detailInstalled || !detailInstallable || !detailLoaded || !compat}
               onClick={() => install(open.source, detailDir)}
               title={
-                detailInstalled ? 'Already in your agent’s skills'
-                  : !detailLoaded || !compat ? 'Install unlocks once the skill has loaded'
-                    : 'Install this skill for your agent'
+                !detailInstallable ? detailUnsupportedReason
+                  : detailInstalled ? 'Already in your agent’s skills'
+                    : !detailLoaded || !compat ? 'Install unlocks once the skill has loaded'
+                      : 'Install this skill for your agent'
               }
             >
-              {detailInstalled ? 'Installed' : busyDir === detailDir ? 'Installing…' : 'Install'}
+              {!detailInstallable ? 'Unsupported' : detailInstalled ? 'Installed' : busyDir === detailDir ? 'Installing…' : 'Install'}
             </button>
             <a
               className="sk-iconbtn"
@@ -725,7 +787,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
               aria-label="View on GitHub"
               title="View on GitHub (at the reviewed revision)"
             >{EXTERNAL}</a>
-          </>
+          </div>
         )}
       </div>
       {error && <div className="sk-alert is-error" role="alert">{error}</div>}
@@ -814,8 +876,9 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                       key={s.dir}
                       skill={s}
                       desc={descs[s.dir]}
-                      installed={existingIds.has(s.id)}
+                      installed={existingIds.has(s.id) || installedLocally.has(s.id)}
                       busy={busyDir === s.dir}
+                      anyBusy={busyDir !== null}
                       compat={compatByDir[s.dir] || null}
                       onOpen={() => openSkillPage(s.dir)}
                       onLoad={() => loadDescription(open.source, s.dir, open.oid, open.token)}
@@ -889,6 +952,8 @@ export default function SkillsApp({ appId, token }) {
   }
   const catalogNav = catalogNavRef.current
   const readySignalledRef = useRef(false) // gate app_ready to the first successful load
+  const refreshCountRef = useRef(0) // in-flight refresh count, so the spinner ends on the LAST
+  const contentGenRef = useRef(0) // detail/compat fetch generation — newest wins
   const contentsRef = useRef(contents)
   contentsRef.current = contents
   const systemPromptAppsLoaderRef = useRef(null)
@@ -917,7 +982,10 @@ export default function SkillsApp({ appId, token }) {
     // list, error state, or the app_ready count.
     systemPromptAppsLoaderRef.current.load(authHeaders)
     const result = await skillsLoaderRef.current.load(authHeaders)
-    if (!result.applied) return // superseded — the newer request's outcome wins
+    // Return the settled outcome so mutation callers (uninstall/install) can
+    // tell a real reconciliation from a swallowed failure instead of assuming
+    // the list is "already current."
+    if (!result.applied) return { applied: false, ok: false } // superseded
     if (result.ok) {
       setSkills(result.rows)
       setLoadError(null)
@@ -933,6 +1001,7 @@ export default function SkillsApp({ appId, token }) {
       })
       // Keep the last-known-good list intact; on the first load skills stays null.
     }
+    return { applied: true, ok: result.ok }
   }
 
   useEffect(() => {
@@ -944,11 +1013,19 @@ export default function SkillsApp({ appId, token }) {
   }, []) // the skills API has no subscribe(); refresh is explicit
 
   async function refresh() {
+    // Ref-count overlapping refreshes: an older call finishing first must not
+    // flip the spinner off while a newer one is still in flight.
+    refreshCountRef.current += 1
     setRefreshing(true)
+    contentGenRef.current += 1 // invalidate in-flight detail/compat fetches
     setContents({}) // an explicit refresh also drops cached detail markdown
     setInstCompat({}) // compat verdicts derive from that markdown — drop them too
-    await load({ isRefresh: true })
-    setRefreshing(false)
+    try {
+      await load({ isRefresh: true })
+    } finally {
+      refreshCountRef.current -= 1
+      if (refreshCountRef.current === 0) setRefreshing(false)
+    }
   }
 
   // React reuses the scroller DOM node when the list swaps to the detail tree
@@ -1011,15 +1088,21 @@ export default function SkillsApp({ appId, token }) {
     if (!current || contentsRef.current[current.id]) return
     const { id } = current
     const path = skillContentPath(current)
+    // Newest-generation-wins: a refresh (which clears the cache) bumps the
+    // generation, so a detail fetch that started earlier can't complete late
+    // and overwrite the freshly-invalidated state with stale bytes.
+    const gen = contentGenRef.current
     setContents((c) => ({ ...c, [id]: { status: 'loading' } }))
     fetch(path, { headers: authHeaders })
       .then(async (r) => {
         if (!r.ok) throw new Error(`content ${r.status}`)
         const text = await r.text()
+        if (gen !== contentGenRef.current) return
         setContents((c) => ({ ...c, [id]: { status: 'ready', text } }))
       })
       .catch((err) => {
         window.mobius?.signal?.('error', { message: String(err?.message || err), source: 'skill_load', status: 0 })
+        if (gen !== contentGenRef.current) return
         setContents((c) => ({ ...c, [id]: { status: 'failed' } }))
       })
   }, [selected, skills])
@@ -1051,7 +1134,11 @@ export default function SkillsApp({ appId, token }) {
           const res = await fetch(skillContentPath(s), { headers: authHeaders })
           if (!res.ok) continue
           const raw = await res.text()
-          const files = s.is_dir ? await listInstalledFiles(fetchJson, s.id) : []
+          // Prefer the authoritative installer inventory; fall back to the
+          // shared-list walk only when the row carries none (older installs).
+          const files = s.files != null
+            ? s.files
+            : s.is_dir ? await listInstalledFiles(fetchJson, s.id) : []
           if (files === null || stale) continue
           setContents((c) => (c[s.id] ? c : { ...c, [s.id]: { status: 'ready', text: raw } }))
           setInstCompat((m) => ({ ...m, [s.id]: assessInstalled(files, raw) }))
@@ -1074,7 +1161,9 @@ export default function SkillsApp({ appId, token }) {
     let stale = false
     ;(async () => {
       let files = []
-      if (isDir) {
+      if (current.files != null) {
+        files = current.files // authoritative installer inventory
+      } else if (isDir) {
         files = await listInstalledFiles(fetchJson, id)
         if (files === null) return // listing failed — no verdict beats a wrong one
       }
@@ -1109,10 +1198,14 @@ export default function SkillsApp({ appId, token }) {
     setRemoveBusy(true)
     setRemoveError(null)
     try {
-      await deleteSkill(current.id)
-      // The reload is AWAITED (removeBusy keeps the truthful pending state up)
-      // so the list behind the closing detail is already current — never a
-      // fire-and-forget refresh racing the close.
+      const removedId = current.id
+      await deleteSkill(removedId)
+      // The DELETE is confirmed, so the skill is gone regardless of what the
+      // reconciling reload does next. Drop it from authoritative local state
+      // NOW: if load() then fails (it swallows the error into loadError and
+      // returns ok:false), the list still must not show a skill the server
+      // already removed. The awaited reload is the full reconciliation on top.
+      setSkills((rows) => (Array.isArray(rows) ? rows.filter((s) => s.id !== removedId) : rows))
       await load({ isRefresh: true })
       closeSkill()
     } catch (err) {
