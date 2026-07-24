@@ -41,16 +41,14 @@ import {
 //
 //   - the list comes from GET /api/skills, so directory-shaped skills
 //     (<name>/SKILL.md) appear too, with provenance + 30-day usage,
-//   - a Find button opens an agent chat (moebius:new-chat draft) — the
-//     finding-skills seed skill is the agent's discovery playbook,
 //   - a catalog screen scans public skill repos (one git-trees call per source
 //     through /api/proxy) and installs via POST /api/skills/install,
 //   - install-provenance skills can be removed from the detail view.
 //
-// Creating/editing a skill still routes to the agent — a mini-app can read
-// shared storage but not write it; install/uninstall go through the skills API
-// (gated by permissions.manage_skills). Pure logic lives in ./domain.js and
-// ./catalog.js so it stays unit-testable without react/marked/dompurify.
+// Creating/editing belongs in a chat the owner chooses, rather than a button
+// that unexpectedly opens and pre-fills another chat. Install/uninstall go
+// through the skills API (gated by permissions.manage_skills). Pure logic lives
+// in ./domain.js and ./catalog.js so it stays unit-testable.
 
 const CSS = `
 /* mobius-ui:Root v1 — keep in sync; library candidate. */
@@ -316,16 +314,9 @@ const REFRESH = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const SEARCH = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
 const CHEV = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
 const BACK = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-const PLUS = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-const SPARKLE = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3L12 3Z"/></svg>
 const BOOK = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
 const TRASH = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
 const EXTERNAL = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-
-// Prefilled draft for the Find flow. The agent's playbook is the
-// finding-skills seed skill (sources, fit criteria, the trust ritual, and the
-// exact install call); the owner just finishes this sentence.
-const FIND_DRAFT = "I want to find and install a new skill for my agent. Here's what I'm trying to do: "
 
 // How many card summaries to warm eagerly after a scan. A large catalog holds
 // hundreds of skills; prefetching all of them would fire hundreds of raw
@@ -798,9 +789,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
             <>
               <p className="sk-cat-note">
                 Public catalogs that host installable skills. Open one to see every skill it
-                holds, or use ✦ Find on the main screen to have the agent search them all —
-                the agent also covers community awesome-lists and the rest of GitHub, which
-                only index skills and can’t be browsed here.
+                holds. For a broader search or a custom skill, ask in whichever chat you choose.
               </p>
               <div className="sk-list">
                 {sources.map((s) => (
@@ -1070,15 +1059,6 @@ export default function SkillsApp({ appId, token }) {
     if (selected && skills && !skills.some((s) => s.id === selected)) closeSkill()
   }, [selected, skills])
 
-  function askAgent(draft) {
-    window.parent.postMessage({ type: 'moebius:new-chat', draft }, window.location.origin)
-  }
-
-  function findSkills() {
-    window.mobius?.signal?.('find_skills_requested', {})
-    askAgent(FIND_DRAFT)
-  }
-
   const current = selected && skills ? skills.find((s) => s.id === selected) : null
 
   // Lazy detail fetch: the list is metadata-only now, so the full markdown is
@@ -1297,10 +1277,6 @@ export default function SkillsApp({ appId, token }) {
               aria-label={removeArmed ? 'Tap again to remove this skill' : 'Remove this skill'}
             >{TRASH}<span className="sk-tip" aria-hidden="true">Delete – removes the skill (asks once more before deleting)</span></button>
           )}
-          <button className="sk-iconbtn" onClick={() => {
-            window.mobius?.signal?.('edit_requested', { type: 'skill', slug: current.id })
-            askAgent(`Help me edit the "${current.id}" skill. Here's what I want to change: `)
-          }} aria-label="Edit skill with the agent">{PLUS}<span className="sk-tip" aria-hidden="true">Edit – opens a chat with the agent to change the skill</span></button>
         </div>
         {removeArmed && !removeError && (
           <div className="sk-alert" role="status">Tap the bin again to remove “{current.id}”. Its bytes are saved to git history first.</div>
@@ -1389,9 +1365,6 @@ export default function SkillsApp({ appId, token }) {
             <span className="sk-subtitle">{skills ? `${skills.length} agent ${skills.length === 1 ? 'skill' : 'skills'}` : 'Your agent’s abilities'}</span>
           </div>
         </div>
-        <button className="sk-iconbtn" onClick={findSkills} aria-label="Ask the agent to find a new skill">
-          {SPARKLE}<span className="sk-tip" aria-hidden="true">Find – use agent to find a skill you need</span>
-        </button>
         <button className="sk-iconbtn" onClick={openCatalog} aria-label="Browse skill catalogs">
           {BOOK}<span className="sk-tip" aria-hidden="true">Browse – look at the public skill catalogs</span>
         </button>
@@ -1429,12 +1402,8 @@ export default function SkillsApp({ appId, token }) {
           <div className="sk-empty">
             <div className="sk-empty-mark" aria-hidden="true">{HAMMER}</div>
             <div className="sk-empty-title">No skills yet</div>
-            <p className="sk-empty-text">Skills extend what your agent can do. Ask the agent to find or create one and it’ll appear here.</p>
-            <button className="sk-retry" onClick={findSkills}>Find a skill</button>
-            <button className="sk-retry" onClick={() => {
-              window.mobius?.signal?.('item_created', { type: 'skill' })
-              askAgent('Create a new skill for me. It should: ')
-            }}>Ask the agent</button>
+            <p className="sk-empty-text">Browse the public catalogs, or ask for a custom skill in whichever chat you choose.</p>
+            <button className="sk-retry" onClick={openCatalog}>Browse catalogs</button>
           </div>
         )}
 
