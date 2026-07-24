@@ -11,11 +11,9 @@ skill shape (flat `<name>.md` and directory `<name>/SKILL.md`) with provenance
 counts. Tap a skill to read it as sanitized markdown (full markdown fetched
 lazily from shared storage).
 
-**Find (agent-first)** — the ✦ header button opens an agent chat with a
-prefilled draft. The agent's playbook is the platform's `finding-skills.md`
-seed skill: where to look, how to judge fit, the trust ritual (read a
-third-party SKILL.md fully and summarize what it instructs before installing),
-and the exact install API call.
+**Owner-chosen chat** — the app does not open or prefill another chat. To find,
+create, or edit a custom skill with the agent, the owner starts that request in
+whichever chat they choose.
 
 **Catalog screen** — the ▤ header button opens a curated list of public repos
 that host SKILL.md skills. One recursive git-trees call per source (through
