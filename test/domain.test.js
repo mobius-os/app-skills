@@ -6,6 +6,7 @@ import {
   mapSkillRows,
   mergeConfirmedSkill,
   createSkillsLoader,
+  loadLegacySkills,
   selectSystemPromptApps,
   fetchSystemPromptApps,
   createSystemPromptAppsLoader,
@@ -358,4 +359,67 @@ test('createSkillsLoader: errors are also generation-gated and invalidate() supe
   const res = await p
   assert.equal(res.ok, false)
   assert.equal(res.applied, false) // stale failure cannot overwrite newer state
+})
+
+test('createSkillsLoader: a missing v2 route falls back to legacy browsing mode', async () => {
+  const fetchImpl = async (url) => {
+    if (url === '/api/skills') return { ok: false, status: 404 }
+    if (url === '/api/storage/shared-list/skills/?limit=200') {
+      return {
+        ok: true,
+        json: async () => ({
+          entries: [
+            { name: 'cron.md', type: 'file' },
+            { name: '.seed-version', type: 'file' },
+          ],
+          next_cursor: null,
+        }),
+      }
+    }
+    if (url === '/api/storage/shared/skills/cron.md') {
+      return { ok: true, text: async () => '# Cron\n\nSchedule recurring work.' }
+    }
+    throw new Error(`unexpected ${url}`)
+  }
+  const result = await createSkillsLoader({ fetchImpl }).load({})
+  assert.equal(result.ok, true)
+  assert.equal(result.applied, true)
+  assert.equal(result.mode, 'legacy')
+  assert.deepEqual(result.rows.map((row) => row.id), ['cron'])
+  assert.equal(result.rows[0].description, 'Schedule recurring work.')
+  assert.equal(result.rows[0].files, null)
+})
+
+test('loadLegacySkills: reads directory-shaped SKILL.md skills too', async () => {
+  const fetchImpl = async (url) => {
+    if (url === '/api/storage/shared-list/skills/?limit=200') {
+      return {
+        ok: true,
+        json: async () => ({
+          entries: [{ name: 'pdf-tools', type: 'directory' }],
+          next_cursor: null,
+        }),
+      }
+    }
+    if (url === '/api/storage/shared-list/skills/pdf-tools/?limit=200') {
+      return {
+        ok: true,
+        json: async () => ({
+          entries: [
+            { name: 'SKILL.md', type: 'file' },
+            { name: 'reference.md', type: 'file' },
+          ],
+          next_cursor: null,
+        }),
+      }
+    }
+    if (url === '/api/storage/shared/skills/pdf-tools/SKILL.md') {
+      return { ok: true, text: async () => '# PDF Tools\n\nWork with PDFs.' }
+    }
+    throw new Error(`unexpected ${url}`)
+  }
+  const [row] = await loadLegacySkills(fetchImpl, {})
+  assert.equal(row.id, 'pdf-tools')
+  assert.equal(row.is_dir, true)
+  assert.equal(row.title, 'PDF Tools')
 })

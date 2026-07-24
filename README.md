@@ -2,8 +2,9 @@
 
 A [Möbius](https://github.com/mobius-os) catalog mini-app. v1 was a read-only
 skill browser; v2 keeps that reading experience and adds the write half of the
-skills story. Requires a platform with the skills API (`mobius-os/mobius`
-PR #146 or later).
+skills story. The write features require a platform with the skills API
+(`mobius-os/mobius` PR #146 or later); older platforms automatically retain
+read-only browsing through shared storage instead of failing the whole app.
 
 **Browse & read** — the list comes from `GET /api/skills`, so it shows every
 skill shape (flat `<name>.md` and directory `<name>/SKILL.md`) with provenance

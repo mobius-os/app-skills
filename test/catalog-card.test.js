@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -89,6 +89,17 @@ test(
       })
       assert.ok(!isDisabled(installButton(scripts)), 'soft-caveat Install stays enabled')
 
+      // A Skills app running on a pre-v2 platform remains browseable, but its
+      // mutation control must explain the version boundary instead of firing
+      // an endpoint that does not exist.
+      const legacy = installButton(render({
+        installed: false,
+        compat: { ok: true, caveats: [] },
+        canInstall: false,
+      }))
+      assert.ok(isDisabled(legacy), 'legacy-mode install stays disabled')
+      assert.match(legacy, /Update needed/)
+
       // B2: installed-ness is purely a function of the `installed` prop (the
       // single root set) — no internal latch. false → Install + enabled;
       // true → Installed + disabled; and back to false → Install + enabled,
@@ -111,3 +122,14 @@ test(
     }
   },
 )
+
+test('catalog detail recomputes when compatibility mode becomes installable', () => {
+  const source = readFileSync(fileURLToPath(new URL('../index.jsx', import.meta.url)), 'utf8')
+  const detailMemo = source.split('const detailHtml = useMemo(() => {', 2)[1]
+    .split('// Pre-install compat', 1)[0]
+
+  // An in-place platform update can keep the same catalog entry while changing
+  // read-only legacy mode into the full v2 API. The Markdown preview must then
+  // invalidate instead of retaining the compatibility-mode empty string.
+  assert.match(detailMemo, /\}, \[detailEntry, canInstall\]\)/)
+})

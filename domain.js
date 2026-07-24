@@ -202,9 +202,28 @@ export function createSkillsLoader({ fetchImpl }) {
     const requestGeneration = ++generation
     try {
       const res = await fetchImpl('/api/skills', { headers })
-      if (!res?.ok) throw new Error(`list ${res?.status}`)
-      const rows = mapSkillRows(await res.json())
-      return { applied: requestGeneration === generation, ok: true, rows }
+      if (res?.ok) {
+        const rows = mapSkillRows(await res.json())
+        return {
+          applied: requestGeneration === generation,
+          ok: true,
+          rows,
+          mode: 'full',
+        }
+      }
+      // App updates can reach an older Möbius instance before the matching
+      // platform update. A missing v2 route is a compatibility signal, not a
+      // broken skill collection: retain browsing through shared storage.
+      if (res?.status === 404 || res?.status === 405) {
+        const rows = await loadLegacySkills(fetchImpl, headers)
+        return {
+          applied: requestGeneration === generation,
+          ok: true,
+          rows,
+          mode: 'legacy',
+        }
+      }
+      throw new Error(`list ${res?.status}`)
     } catch (error) {
       return { applied: requestGeneration === generation, ok: false, error }
     }
@@ -215,6 +234,93 @@ export function createSkillsLoader({ fetchImpl }) {
   }
 
   return { load, invalidate }
+}
+
+async function listLegacyDir(fetchImpl, path, headers) {
+  const rows = []
+  let cursor = null
+  do {
+    const suffix = cursor ? `?limit=200&cursor=${encodeURIComponent(cursor)}` : '?limit=200'
+    const res = await fetchImpl(`/api/storage/shared-list/${path}${suffix}`, { headers })
+    if (!res?.ok) throw new Error(`list ${res?.status}`)
+    const data = await res.json()
+    rows.push(...(Array.isArray(data?.entries) ? data.entries : []))
+    cursor = typeof data?.next_cursor === 'string' && data.next_cursor
+      ? data.next_cursor
+      : null
+  } while (cursor)
+  return rows
+}
+
+// Compatibility reader for platforms that predate GET /api/skills. It returns
+// the same row shape as mapSkillRows, but older platforms cannot report
+// provenance, usage, commit, or a complete installed-file inventory.
+export async function loadLegacySkills(fetchImpl, headers) {
+  const entries = await listLegacyDir(fetchImpl, 'skills/', headers)
+  const candidates = []
+  for (const entry of entries) {
+    const name = typeof entry?.name === 'string' ? entry.name : ''
+    if (!name || name.startsWith('.')) continue
+    if (entry?.type === 'file' && name.toLowerCase().endsWith('.md')) {
+      candidates.push({
+        id: name.slice(0, -3),
+        name,
+        is_dir: false,
+        path: `/api/storage/shared/skills/${encodeURIComponent(name)}`,
+      })
+      continue
+    }
+    if (entry?.type === 'directory' || entry?.type === 'dir') {
+      const children = await listLegacyDir(
+        fetchImpl,
+        `skills/${encodeURIComponent(name)}/`,
+        headers,
+      )
+      if (children.some((child) =>
+        child?.type === 'file' && String(child?.name || '').toLowerCase() === 'skill.md')) {
+        candidates.push({
+          id: name,
+          name,
+          is_dir: true,
+          path: `/api/storage/shared/skills/${encodeURIComponent(name)}/SKILL.md`,
+        })
+      }
+    }
+  }
+
+  const rows = await Promise.all(candidates.map(async (candidate) => {
+    let text = ''
+    let unavailable = false
+    try {
+      const res = await fetchImpl(candidate.path, { headers })
+      if (!res?.ok) unavailable = true
+      else text = await res.text()
+    } catch {
+      unavailable = true
+    }
+    const parsed = parseSkill(
+      candidate.is_dir ? candidate.name : `${candidate.id}.md`,
+      text,
+    )
+    return {
+      id: candidate.id,
+      name: candidate.name,
+      title: parsed.title,
+      description: parsed.description,
+      provenance: '',
+      is_dir: candidate.is_dir,
+      uses: 0,
+      commit: null,
+      sourceRepo: null,
+      sourcePath: null,
+      sourceUrl: null,
+      files: null,
+      unavailable,
+    }
+  }))
+  return rows
+    .filter((row) => row.id)
+    .sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()))
 }
 
 export function installedAppDisplayName(app) {

@@ -233,6 +233,7 @@ const CSS = `
 .sk-md th { background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 650; }
 .sk-md hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 .sk-md img { max-width: 100%; }
+.sk-plain { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font); }
 
 /* alerts (catalog + detail actions) */
 .sk-alert { flex: 0 0 auto; margin: 10px 16px 0; padding: 9px 12px; border-radius: 10px; font-size: 13px;
@@ -333,6 +334,10 @@ function initialOnline() {
 function ProvChips({ provenance, uses, compat }) {
   const chip = provenanceChip(provenance)
   const usage = usageLabel(uses)
+  // Older platforms can list the skill files but cannot report provenance or
+  // usage. Omit the metadata row there instead of filling every card with an
+  // unhelpful "unknown" chip.
+  if (!provenance && !usage && !compat) return null
   return (
     <span className="sk-provrow">
       <span className={`sk-prov ${chip.kind}`} title={chip.title}>{chip.label}</span>
@@ -354,7 +359,7 @@ function ProvChips({ provenance, uses, compat }) {
 // REAL button (name + summary are its accessible content), so keyboard users
 // can reach the skill page for every card, not just its Install control.
 // Exported for the a11y render test.
-export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, onOpen, onLoad, onInstall, onCaveats, onRetry }) {
+export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, canInstall = true, onOpen, onLoad, onInstall, onCaveats, onRetry }) {
   const ref = useRef(null)
 
   useEffect(() => {
@@ -396,17 +401,18 @@ export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, onO
           // installs never overlap — a completing install can't re-enable a
           // sibling that a stale write is about to touch. Enabled ONLY when the
           // closed result says installable (compat known, no blocking caveat).
-          disabled={anyBusy || installed || inst.status !== 'installable' || !loaded}
+          disabled={!canInstall || anyBusy || installed || inst.status !== 'installable' || !loaded}
           onClick={(e) => { e.stopPropagation(); onInstall() }}
           title={
-            inst.status === 'unsupported' ? inst.reason
+            !canInstall ? 'Catalog installs need a newer Möbius version'
+              : inst.status === 'unsupported' ? inst.reason
               : installed ? 'Already in your agent’s skills'
                 : inst.status === 'loading' || !loaded ? 'Install unlocks once the skill has loaded'
                   : anyBusy ? 'Another skill is installing…'
                     : 'Install this skill for your agent'
           }
         >
-          {inst.status === 'unsupported' ? 'Unsupported' : installed ? 'Installed' : busy ? 'Installing…' : 'Install'}
+          {!canInstall ? 'Update needed' : inst.status === 'unsupported' ? 'Unsupported' : installed ? 'Installed' : busy ? 'Installing…' : 'Install'}
         </button>
         {desc === 'failed' && supported && (
           <button
@@ -439,7 +445,7 @@ export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, onO
 // The catalog screen: curated sources → one git-trees scan each → flat cards.
 // Rendered as a hidden-not-unmounted overlay so scan results and scroll
 // survive closing and reopening it.
-function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose }) {
+function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstalled, onClose }) {
   const [sources, setSources] = useState(DEFAULT_SOURCES)
   const [open, setOpen] = useState(null) // { source } | null = source list
   const [skillList, setSkillList] = useState(null)
@@ -484,13 +490,13 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   useEffect(() => {
     // Owner browsing is the natural freshness signal for the agent's cached
     // catalog index — fire-and-forget; the server's 24h gate absorbs repeats.
-    if (!visible) return
+    if (!visible || !canInstall) return
     fetch('/api/skills/catalog-index/refresh', {
       method: 'POST',
       headers: { ...authHeaders, 'Content-Type': 'application/json' },
       body: '{}',
     }).catch(() => {})
-  }, [visible])
+  }, [visible, canInstall])
 
   // The sources list, the card list, and the skill page all share this one
   // scroller, so a scrolled card list would otherwise bleed its offset into
@@ -606,6 +612,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   }
 
   const install = async (source, dir) => {
+    if (!canInstall) return
     // The scan token this op belongs to: presentation (notice/error) is written
     // back only if the owner is still on this same source view when it settles.
     const opToken = open?.token
@@ -664,13 +671,17 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
   const detailLoaded = detailEntry && detailEntry !== 'loading' && detailEntry !== 'failed'
   const detailHtml = useMemo(() => {
     if (!detailLoaded) return ''
+    // The platform generation that lacks the skills API also resolves Marked's
+    // documented named export through its UMD browser build, where it becomes
+    // undefined. Compatibility mode renders safe plain text below instead.
+    if (!canInstall) return ''
     try {
       return DOMPurify.sanitize(marked.parse(parseSkill('SKILL.md', detailEntry.raw || '').content || ''))
     } catch (err) {
       window.mobius?.signal?.('error', { message: String(err?.message || err), source: 'markdown_render' })
       return ''
     }
-  }, [detailEntry])
+  }, [detailEntry, canInstall])
 
   // Pre-install compat, per card: predict what the installer would drop, from
   // the tree scan we already have. A verdict appears once a card's SKILL.md is
@@ -754,16 +765,17 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                 result is anything but installable. */}
             <button
               className="sk-btn"
-              disabled={busyDir !== null || detailInstalled || detailInst.status !== 'installable' || !detailLoaded}
+              disabled={!canInstall || busyDir !== null || detailInstalled || detailInst.status !== 'installable' || !detailLoaded}
               onClick={() => install(open.source, detailDir)}
               title={
-                detailInst.status === 'unsupported' ? detailInst.reason
+                !canInstall ? 'Catalog installs need a newer Möbius version'
+                  : detailInst.status === 'unsupported' ? detailInst.reason
                   : detailInstalled ? 'Already in your agent’s skills'
                     : detailInst.status === 'loading' || !detailLoaded ? 'Install unlocks once the skill has loaded'
                       : 'Install this skill for your agent'
               }
             >
-              {detailInst.status === 'unsupported' ? 'Unsupported' : detailInstalled ? 'Installed' : busyDir === detailDir ? 'Installing…' : 'Install'}
+              {!canInstall ? 'Update needed' : detailInst.status === 'unsupported' ? 'Unsupported' : detailInstalled ? 'Installed' : busyDir === detailDir ? 'Installing…' : 'Install'}
             </button>
             <a
               className="sk-iconbtn"
@@ -778,6 +790,11 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
       </div>
       {error && <div className="sk-alert is-error" role="alert">{error}</div>}
       {notice && !error && <div className="sk-alert" role="status">{notice}</div>}
+      {!canInstall && (
+        <div className="sk-alert" role="status">
+          Browsing still works. Installing from catalogs needs a newer Möbius version.
+        </div>
+      )}
       {detailDir && showCaveats && compat && !compat.ok && (
         <ul className="sk-caveats" role="status">
           {compat.caveats.map((c) => <li key={c.kind}>{c.text}</li>)}
@@ -824,7 +841,11 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                 )}
               </div>
             ) : detailLoaded ? (
-              <div className="sk-md" onClick={onDetailClick} dangerouslySetInnerHTML={{ __html: detailHtml }} />
+              canInstall ? (
+                <div className="sk-md" onClick={onDetailClick} dangerouslySetInnerHTML={{ __html: detailHtml }} />
+              ) : (
+                <pre className="sk-md sk-plain">{parseSkill('SKILL.md', detailEntry.raw || '').content || ''}</pre>
+              )
             ) : (
               <div className="sk-empty"><div className="sk-spinner" /></div>
             )
@@ -864,6 +885,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
                       busy={busyDir === s.dir}
                       anyBusy={busyDir !== null}
                       compat={compatByDir[s.dir] || null}
+                      canInstall={canInstall}
                       onOpen={() => openSkillPage(s.dir)}
                       onLoad={() => loadDescription(open.source, s.dir, open.oid, open.token)}
                       onInstall={() => install(open.source, s.dir)}
@@ -893,6 +915,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, onInstalled, onClose
 export default function SkillsApp({ appId, token }) {
   const [skills, setSkills] = useState(null) // null = never loaded; [] or [..] = last-known-good
   const [systemPromptApps, setSystemPromptApps] = useState([])
+  const [skillsMode, setSkillsMode] = useState('unknown') // full API or read-only legacy fallback
   const [loadError, setLoadError] = useState(null) // user-facing copy for the latest failed load
   const [refreshing, setRefreshing] = useState(false)
   const [query, setQuery] = useState('')
@@ -972,6 +995,7 @@ export default function SkillsApp({ appId, token }) {
     if (!result.applied) return { applied: false, ok: false } // superseded
     if (result.ok) {
       setSkills(result.rows)
+      setSkillsMode(result.mode || 'full')
       setLoadError(null)
       if (!readySignalledRef.current) {
         readySignalledRef.current = true
@@ -1242,13 +1266,14 @@ export default function SkillsApp({ appId, token }) {
   }, [current, currentContent])
   const detailHtml = useMemo(() => {
     if (!detailParsed) return ''
+    if (skillsMode === 'legacy') return ''
     try {
       return DOMPurify.sanitize(marked.parse(detailParsed.content || ''))
     } catch (err) {
       window.mobius?.signal?.('error', { message: String(err?.message || err), source: 'markdown_render' })
       return ''
     }
-  }, [detailParsed])
+  }, [detailParsed, skillsMode])
 
   const existingIds = useMemo(() => new Set((skills || []).map((s) => s.id)), [skills])
 
@@ -1326,7 +1351,11 @@ export default function SkillsApp({ appId, token }) {
               <p className="sk-empty-text">The file for “{current.id}” couldn’t be read. Try refreshing, or ask the agent to check it.</p>
             </div>
           ) : currentContent?.status === 'ready' ? (
-            <div className="sk-md" onClick={onDetailClick} dangerouslySetInnerHTML={{ __html: detailHtml }} />
+            skillsMode === 'legacy' ? (
+              <pre className="sk-md sk-plain">{detailParsed?.content || currentContent.text || ''}</pre>
+            ) : (
+              <div className="sk-md" onClick={onDetailClick} dangerouslySetInnerHTML={{ __html: detailHtml }} />
+            )
           ) : (
             <div className="sk-empty"><div className="sk-spinner" /></div>
           )}
@@ -1395,6 +1424,12 @@ export default function SkillsApp({ appId, token }) {
             <div className="sk-empty-title">Couldn’t load skills</div>
             <p className="sk-empty-text">{loadError}</p>
             <button className="sk-retry" onClick={refresh}>Try again</button>
+          </div>
+        )}
+
+        {skills !== null && skillsMode === 'legacy' && (
+          <div className="sk-alert" role="status">
+            Read-only compatibility mode. Your skills are available; catalog installs and removals need a newer Möbius version.
           </div>
         )}
 
@@ -1475,6 +1510,7 @@ export default function SkillsApp({ appId, token }) {
           visible={catalogOpen}
           authHeaders={authHeaders}
           existingIds={existingIds}
+          canInstall={skillsMode === 'full'}
           onInstalled={acceptInstalledSkill}
           onClose={closeCatalog}
         />
