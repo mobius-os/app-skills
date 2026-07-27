@@ -2,6 +2,16 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import {
+  ArrowLeft,
+  ArrowRotateCw,
+  BookOpen,
+  ChevronRight,
+  ExternalLink,
+  Search,
+  ToolsSkills,
+  Trash,
+} from '@openai/apps-sdk-ui/components/Icon'
+import {
   parseSkill,
   classifyLink,
   friendlyLoadError,
@@ -310,14 +320,14 @@ const CSS = `
 /* /mobius-ui:ReducedMotion */
 `
 
-const HAMMER = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 12-8.5 8.5a2.12 2.12 0 1 1-3-3L12 9"/><path d="M17.64 15 22 10.64"/><path d="m20.91 11.7-1.25-1.25c-.6-.6-.93-1.4-.93-2.25v-.86L16.01 4.6a5.56 5.56 0 0 0-3.94-1.64H9l.92.82A6.18 6.18 0 0 1 12 8.4v1.56l2 2h.86c.85 0 1.65.34 2.25.93l1.25 1.25"/></svg>
-const REFRESH = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
-const SEARCH = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-const CHEV = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-const BACK = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-const BOOK = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
-const TRASH = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-const EXTERNAL = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+const HAMMER = <ToolsSkills aria-hidden="true" />
+const REFRESH = <ArrowRotateCw aria-hidden="true" />
+const SEARCH = <Search aria-hidden="true" />
+const CHEV = <ChevronRight aria-hidden="true" />
+const BACK = <ArrowLeft aria-hidden="true" />
+const BOOK = <BookOpen aria-hidden="true" />
+const TRASH = <Trash aria-hidden="true" />
+const EXTERNAL = <ExternalLink aria-hidden="true" />
 
 // How many card summaries to warm eagerly after a scan. A large catalog holds
 // hundreds of skills; prefetching all of them would fire hundreds of raw
