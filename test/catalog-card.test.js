@@ -49,6 +49,7 @@ test(
         bundle: true, write: false, format: 'esm',
         loader: { '.jsx': 'jsx' }, jsx: 'automatic',
         external: ['react', 'react-dom', 'react/jsx-runtime'],
+        nodePaths: [nm],
         alias: {
           marked: join(workDir, 'marked-stub.mjs'),
           dompurify: join(workDir, 'dompurify-stub.mjs'),

@@ -55,6 +55,7 @@ test(
         loader: { '.jsx': 'jsx' },
         jsx: 'automatic', // index.jsx never imports React itself
         external: ['react', 'react-dom', 'react/jsx-runtime'],
+        nodePaths: [nm],
         alias: {
           marked: join(workDir, 'marked-stub.mjs'),
           dompurify: join(workDir, 'dompurify-stub.mjs'),
