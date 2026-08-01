@@ -278,7 +278,7 @@ const CSS = `
 .sk-crumb { border: none; background: none; padding: 0; font-family: var(--font); font-size: 14.5px;
   color: var(--accent); cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-crumb.cur { color: var(--text); font-weight: 700; cursor: default; }
-.sk-crumbsep { flex: 0 0 auto; color: var(--muted); }
+.sk-crumbsep { flex: 0 0 auto; width: 14px; height: 14px; color: var(--muted); }
 .sk-cat-count { padding: 2px 16px 8px; font-size: 12.5px; color: var(--muted); }
 .sk-cards { padding: 0 12px 32px; }
 .sk-card { border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
@@ -744,13 +744,13 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
           ) : (
             <span className="sk-crumb cur">Skill catalogs</span>
           )}
-          {open && <span className="sk-crumbsep" aria-hidden="true">›</span>}
+          {open && <ChevronRight className="sk-crumbsep" aria-hidden="true" />}
           {open && (detailDir ? (
             <button className="sk-crumb" onClick={() => setDetailDir(null)}>{open.source.label}</button>
           ) : (
             <span className="sk-crumb cur">{open.source.label}</span>
           ))}
-          {detailDir && <span className="sk-crumbsep" aria-hidden="true">›</span>}
+          {detailDir && <ChevronRight className="sk-crumbsep" aria-hidden="true" />}
           {detailDir && <span className="sk-crumb cur">{detailName}</span>}
         </nav>
         {detailDir && open && (
