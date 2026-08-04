@@ -20,6 +20,8 @@ export const DEFAULT_SOURCES = [
     blurb: 'The famous dev-methodology set — brainstorming, planning, TDD, debugging.' },
   { label: 'Trail of Bits Security', repo: 'trailofbits/skills', path: '', ref: 'main',
     blurb: 'Security research, vulnerability detection, and audit workflows.' },
+  { label: 'Impeccable', repo: 'pbakaus/impeccable', path: '.claude/skills', ref: 'main',
+    blurb: 'A focused frontend design toolkit for auditing, shaping, and polishing interfaces.' },
   { label: 'Cloudflare', repo: 'cloudflare/skills', path: 'skills', ref: 'main',
     blurb: 'Official Cloudflare skills for building on Workers and the CF platform.' },
   { label: 'Hermes bundled', repo: 'NousResearch/hermes-agent', path: 'skills', ref: 'main',
@@ -279,20 +281,20 @@ export function catalogSummary(text) {
 // _RESOURCE_SUFFIXES). Advisory display only: the backend enforces for real,
 // this just predicts what it will do so the badge can warn before install.
 export const INSTALL_LIMITS = {
-  maxFiles: 24,
-  maxTotalBytes: 2 * 1024 * 1024,
+  maxFiles: 256,
+  maxTotalBytes: 8 * 1024 * 1024,
   // The backend caps the fetched SKILL.md itself (manifest_contract.
   // SKILL_MAX_BYTES = 256 KiB). A larger entry document doesn't install whole,
   // so the badge must warn instead of showing a false green.
   skillMaxBytes: 256 * 1024,
   // Maximum PATH SEGMENTS per resource, exactly the backend's
-  // _RESOURCE_MAX_DEPTH semantics (`a/b/c/file.md` = 4 segments = at the cap).
-  maxDepth: 4,
-  suffixes: ['.md', '.txt', '.json', '.yaml', '.yml', '.csv', '.py', '.js', '.ts',
-    '.sh', '.toml', '.html', '.css'],
+  // _RESOURCE_MAX_DEPTH semantics (`a/b/c/d/e/f/g/file.md` = 8 segments).
+  maxDepth: 8,
+  suffixes: ['.md', '.txt', '.json', '.yaml', '.yml', '.csv', '.py', '.js', '.mjs',
+    '.cjs', '.ts', '.tsx', '.jsx', '.sh', '.toml', '.html', '.css'],
 }
 
-const SCRIPT_SUFFIXES = ['.py', '.js', '.ts', '.sh']
+const SCRIPT_SUFFIXES = ['.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.sh']
 
 function suffixOf(path) {
   const base = path.split('/').pop() || ''
