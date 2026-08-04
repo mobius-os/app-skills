@@ -43,6 +43,8 @@ import {
   assessCompat,
   assessInstalled,
   installability,
+  searchCatalog,
+  createCatalogIndexLoader,
 } from './catalog.js'
 
 // Skills — browse, read, and grow the agent's skills (the SKILL-style markdown
@@ -136,6 +138,16 @@ const CSS = `
 
 /* list */
 .sk-list { display: flex; flex-direction: column; padding: 4px 12px 32px; }
+.sk-results { padding: 4px 12px 10px; }
+.sk-result-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 14px 8px 6px; }
+.sk-result-title { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--text); }
+.sk-result-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.sk-result-list { display: flex; flex-direction: column; }
+.sk-result-empty { margin: 0; padding: 12px 8px 18px; color: var(--muted); font-size: 13.5px; line-height: 1.45; }
+.sk-result-status { display: flex; align-items: center; gap: 10px; min-height: 48px;
+  padding: 8px; color: var(--muted); font-size: 13.5px; }
+.sk-result-status .sk-spinner { width: 18px; height: 18px; border-width: 2px; }
 .sk-row { display: flex; align-items: flex-start; gap: 13px; width: 100%; box-sizing: border-box;
   text-align: left; padding: 14px 8px; background: none; border: none; border-bottom: 1px solid var(--border-light, var(--border));
   color: var(--text); font-family: var(--font); cursor: pointer; }
@@ -145,8 +157,8 @@ const CSS = `
   align-items: center; justify-content: center; font-size: 18px;
   background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .sk-rowbody { flex: 1; min-width: 0; }
-.sk-rowname { font-size: 16px; font-weight: 650; letter-spacing: 0; word-break: break-word; }
-.sk-rowslug { font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 1px; }
+.sk-rowname { display: block; font-size: 16px; font-weight: 650; letter-spacing: 0; word-break: break-word; }
+.sk-rowslug { display: block; font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 1px; }
 .sk-rowdesc { margin-top: 4px; font-size: 13.5px; line-height: 1.5; color: var(--muted);
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .sk-rowtag { display: inline-block; margin-top: 5px; font-size: 11px; font-weight: 600; color: var(--danger);
@@ -162,6 +174,7 @@ const CSS = `
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-prov.seed { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .sk-prov.installed { color: var(--success, #2e9e5b); border-color: color-mix(in srgb, var(--success, #2e9e5b) 55%, transparent); }
+.sk-prov.available { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .sk-uses { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .sk-srclink { font-size: 11px; font-weight: 600; color: var(--accent); text-decoration: none;
   white-space: nowrap; }
@@ -363,6 +376,39 @@ function ProvChips({ provenance, uses, compat }) {
   )
 }
 
+function InstalledRows({ rows, onOpen, compatById }) {
+  return rows.map((skill) => (
+    <button key={skill.id} className="sk-row" onClick={() => onOpen(skill.id)} title={`Open “${skill.title}”`}>
+      <span className="sk-rowicon" aria-hidden="true">{HAMMER}</span>
+      <span className="sk-rowbody">
+        <span className="sk-rowname">{skill.title}</span>
+        <span className="sk-rowslug">{skill.id}</span>
+        {skill.description && <span className="sk-rowdesc">{skill.description}</span>}
+        <ProvChips provenance={skill.provenance} uses={skill.uses} compat={compatById[skill.id]} />
+      </span>
+      <span className="sk-chev" aria-hidden="true">{CHEV}</span>
+    </button>
+  ))
+}
+
+function RegistryRows({ rows, onOpen }) {
+  return rows.map((skill) => (
+    <button key={skill.key} className="sk-row" onClick={() => onOpen(skill)} title={`Review “${skill.name}” in the registry`}>
+      <span className="sk-rowicon" aria-hidden="true">{BOOK}</span>
+      <span className="sk-rowbody">
+        <span className="sk-rowname">{skill.name}</span>
+        <span className="sk-rowslug">{skill.path}</span>
+        {skill.description && <span className="sk-rowdesc">{skill.description}</span>}
+        <span className="sk-provrow">
+          <span className="sk-prov available">not installed</span>
+          <span className="sk-uses">{skill.sourceLabel}</span>
+        </span>
+      </span>
+      <span className="sk-chev" aria-hidden="true">{CHEV}</span>
+    </button>
+  ))
+}
+
 // One catalog card. Summaries prefetch in the background after the source
 // scan; the IntersectionObserver only lets visible cards jump that queue (and
 // is the fallback when the pool is cancelled mid-run). The open action is a
@@ -455,7 +501,7 @@ export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, can
 // The catalog screen: curated sources → one git-trees scan each → flat cards.
 // Rendered as a hidden-not-unmounted overlay so scan results and scroll
 // survive closing and reopening it.
-function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstalled, onClose }) {
+function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstalled, onClose, target }) {
   const [sources, setSources] = useState(DEFAULT_SOURCES)
   const [open, setOpen] = useState(null) // { source } | null = source list
   const [skillList, setSkillList] = useState(null)
@@ -478,6 +524,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
   // dropped, so a slow source A can never overwrite state after B is current.
   const guardRef = useRef(null)
   if (!guardRef.current) guardRef.current = createGenerationGuard()
+  const consumedTargetRef = useRef(null)
 
   useEffect(() => {
     // Sources are app data: a saved sources.json overrides the defaults, so
@@ -553,7 +600,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
     loadDescription(open.source, dir, open.oid, open.token, { force: true })
   }
 
-  const openSource = async (source) => {
+  const openSource = async (source, targetDir = null) => {
     prefetcherRef.current?.cancel()
     const token = guardRef.current.next()
     setOpen({ source })
@@ -587,6 +634,13 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
       setOpen({ source, oid, token, tree: fullTree })
       setSkillList(skills)
       window.mobius?.signal?.('item_opened', { type: 'catalog-source', slug: source.repo })
+      if (targetDir) {
+        const targetSkill = skills.find((skill) => skill.dir === targetDir)
+        if (!targetSkill) throw new Error('This skill is no longer present in the registry source.')
+        setDetailDir(targetDir)
+        loadDescription(source, targetDir, oid, token)
+        window.mobius?.signal?.('item_opened', { type: 'catalog-skill', slug: targetDir })
+      }
       const prefetcher = createSummaryPrefetcher({
         loadOne: (dir) => loadDescription(source, dir, oid, token),
       })
@@ -603,6 +657,12 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
       if (guardRef.current.isCurrent(token)) setScanBusy(false)
     }
   }
+
+  useEffect(() => {
+    if (!visible || !target || consumedTargetRef.current === target.key) return
+    consumedTargetRef.current = target.key
+    openSource(target.source, target.dir)
+  }, [visible, target])
 
   const backToSources = () => {
     prefetcherRef.current?.cancel()
@@ -929,6 +989,9 @@ export default function SkillsApp({ appId, token }) {
   const [loadError, setLoadError] = useState(null) // user-facing copy for the latest failed load
   const [refreshing, setRefreshing] = useState(false)
   const [query, setQuery] = useState('')
+  const [registryItems, setRegistryItems] = useState(null)
+  const [registryBusy, setRegistryBusy] = useState(true)
+  const [registryError, setRegistryError] = useState(null)
   const [selected, setSelected] = useState(null) // id of open skill
   const [contents, setContents] = useState({}) // id -> { status, text } (lazy detail fetch)
   const [removeArmed, setRemoveArmed] = useState(false)
@@ -936,6 +999,7 @@ export default function SkillsApp({ appId, token }) {
   const [removeError, setRemoveError] = useState(null)
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogMounted, setCatalogMounted] = useState(false)
+  const [catalogTarget, setCatalogTarget] = useState(null)
   const [online, setOnline] = useState(initialOnline)
   const [instCompat, setInstCompat] = useState({}) // id -> assessInstalled verdict (installed:* skills)
   const [showInstCaveats, setShowInstCaveats] = useState(false)
@@ -970,9 +1034,21 @@ export default function SkillsApp({ appId, token }) {
   const catalogNav = catalogNavRef.current
   const readySignalledRef = useRef(false) // gate app_ready to the first successful load
   const refreshCountRef = useRef(0) // in-flight refresh count, so the spinner ends on the LAST
+  const catalogTargetKeyRef = useRef(0)
   const contentGenRef = useRef(0) // detail/compat fetch generation — newest wins
   const contentsRef = useRef(contents)
   contentsRef.current = contents
+  const registryLoaderRef = useRef(null)
+  if (!registryLoaderRef.current) {
+    registryLoaderRef.current = createCatalogIndexLoader({
+      fetchImpl: (...args) => fetch(...args),
+      onItems: (items) => {
+        setRegistryItems(items)
+        setRegistryError(null)
+        setRegistryBusy(false)
+      },
+    })
+  }
   const systemPromptAppsLoaderRef = useRef(null)
   if (!systemPromptAppsLoaderRef.current) {
     systemPromptAppsLoaderRef.current = createSystemPromptAppsLoader({
@@ -1022,11 +1098,28 @@ export default function SkillsApp({ appId, token }) {
     return { applied: true, ok: result.ok }
   }
 
+  async function loadRegistry() {
+    setRegistryBusy(true)
+    setRegistryError(null)
+    const result = await registryLoaderRef.current.load(authHeaders)
+    if (!result.applied) return
+    if (!result.ok || result.error) {
+      setRegistryError('The skill registry could not be loaded. You can still search installed skills or browse catalogs.')
+      window.mobius?.signal?.('error', {
+        message: String(result.error?.message || result.error),
+        source: 'registry_load',
+      })
+    }
+    setRegistryBusy(false)
+  }
+
   useEffect(() => {
     load()
+    loadRegistry()
     return () => {
       systemPromptAppsLoaderRef.current.invalidate()
       skillsLoaderRef.current.invalidate()
+      registryLoaderRef.current.invalidate()
     }
   }, []) // the skills API has no subscribe(); refresh is explicit
 
@@ -1039,7 +1132,7 @@ export default function SkillsApp({ appId, token }) {
     setContents({}) // an explicit refresh also drops cached detail markdown
     setInstCompat({}) // compat verdicts derive from that markdown — drop them too
     try {
-      await load({ isRefresh: true })
+      await Promise.all([load({ isRefresh: true }), loadRegistry()])
     } finally {
       refreshCountRef.current -= 1
       if (refreshCountRef.current === 0) setRefreshing(false)
@@ -1086,6 +1179,23 @@ export default function SkillsApp({ appId, token }) {
   const closeSkill = () => detailNav.close()
   const openCatalog = () => catalogNav.open('catalog')
   const closeCatalog = () => catalogNav.close()
+  const openRegistrySkill = (skill) => {
+    const source = {
+      label: skill.sourceLabel || skill.repo,
+      repo: skill.repo,
+      // Scan this exact skill subtree. The catalog screen still pins the repo
+      // commit, fetches the complete SKILL.md, and runs its compatibility
+      // review before Install can become active.
+      path: skill.path,
+      ref: skill.ref,
+    }
+    setCatalogTarget({
+      key: ++catalogTargetKeyRef.current,
+      source,
+      dir: skill.path,
+    })
+    openCatalog()
+  }
 
   // If a refresh drops the currently-open skill, close the detail so we don't
   // leak the nav sentinel (a later device back would otherwise be consumed).
@@ -1246,6 +1356,8 @@ export default function SkillsApp({ appId, token }) {
     window.mobius?.signal?.('error', { message: `blocked link (${link.reason})`, source: 'skill_link' })
   }
 
+  const existingIds = useMemo(() => new Set((skills || []).map((s) => s.id)), [skills])
+  const hasQuery = query.trim().length > 0
   const filtered = useMemo(() => {
     if (!skills) return []
     const q = query.trim().toLowerCase()
@@ -1253,21 +1365,26 @@ export default function SkillsApp({ appId, token }) {
     return skills.filter((s) =>
       s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
   }, [skills, query])
+  const registrySearch = useMemo(
+    () => searchCatalog(registryItems || [], query, existingIds),
+    [registryItems, query, existingIds],
+  )
 
   // Search analytics for Reflection: emit once per settled query (debounced so a
   // single search isn't counted once per keystroke). Payload is counts only —
-  // never the raw term, which is free-text owner input. Depend on `query` alone
-  // so a background refresh (new skills → new filtered) doesn't re-fire; filtered
-  // is read at fire time and is already current for this query.
+  // never the raw term, which is free-text owner input. Wait for the registry
+  // cache as well as the debounce so a slow first load cannot emit a false
+  // no-results event for a query that has public matches.
   useEffect(() => {
     const q = query.trim()
-    if (!q) return
+    if (!q || registryBusy) return
     const t = setTimeout(() => {
-      window.mobius?.signal?.('search_performed', { query_length: q.length, result_count: filtered.length })
-      if (filtered.length === 0) window.mobius?.signal?.('search_no_results', { query_length: q.length })
+      const resultCount = filtered.length + registrySearch.total
+      window.mobius?.signal?.('search_performed', { query_length: q.length, result_count: resultCount })
+      if (resultCount === 0) window.mobius?.signal?.('search_no_results', { query_length: q.length })
     }, 500)
     return () => clearTimeout(t)
-  }, [query])
+  }, [query, registryBusy])
 
   const currentContent = current ? contents[current.id] : null
   const detailParsed = useMemo(() => {
@@ -1284,8 +1401,6 @@ export default function SkillsApp({ appId, token }) {
       return ''
     }
   }, [detailParsed, skillsMode])
-
-  const existingIds = useMemo(() => new Set((skills || []).map((s) => s.id)), [skills])
 
   const syncPill = !online
     ? <div className="sk-sync-pill" role="status">Offline</div>
@@ -1401,7 +1516,11 @@ export default function SkillsApp({ appId, token }) {
           </span>
           <div>
             <h1 className="sk-title">Skills</h1>
-            <span className="sk-subtitle">{skills ? `${skills.length} agent ${skills.length === 1 ? 'skill' : 'skills'}` : 'Your agent’s abilities'}</span>
+            <span className="sk-subtitle">
+              {skills
+                ? `${skills.length} installed${registryItems ? ` · ${registryItems.length} in registry` : ''}`
+                : 'Your agent’s abilities'}
+            </span>
           </div>
         </div>
         <button className="sk-iconbtn" onClick={openCatalog} aria-label="Browse skill catalogs">
@@ -1414,12 +1533,12 @@ export default function SkillsApp({ appId, token }) {
 
       <div className="sk-scroll" ref={mainScrollRef}>
         <div className="sk-page">
-        {skills !== null && skills.length > 0 && (
+        {skills !== null && (
           <div className="sk-searchwrap">
             <div className="sk-search">
               {SEARCH}
-              <input className="sk-input" type="search" value={query} placeholder="Search skills…"
-                onChange={(e) => setQuery(e.target.value)} aria-label="Search skills" />
+              <input className="sk-input" type="search" value={query} placeholder="Search installed and registry skills…"
+                onChange={(e) => setQuery(e.target.value)} aria-label="Search installed and registry skills" />
             </div>
           </div>
         )}
@@ -1443,7 +1562,7 @@ export default function SkillsApp({ appId, token }) {
           </div>
         )}
 
-        {skills !== null && skills.length === 0 && (
+        {skills !== null && skills.length === 0 && !hasQuery && (
           <div className="sk-empty">
             <div className="sk-empty-mark" aria-hidden="true">{HAMMER}</div>
             <div className="sk-empty-title">No skills yet</div>
@@ -1452,32 +1571,61 @@ export default function SkillsApp({ appId, token }) {
           </div>
         )}
 
-        {skills !== null && skills.length > 0 && filtered.length === 0 && (
-          <div className="sk-empty">
-            <div className="sk-empty-mark" aria-hidden="true">{SEARCH}</div>
-            <div className="sk-empty-title">No matches</div>
-            <p className="sk-empty-text">No skills match “{query}”.</p>
-          </div>
-        )}
-
-        {skills !== null && filtered.length > 0 && (
+        {skills !== null && !hasQuery && filtered.length > 0 && (
           <div className="sk-list">
-            {filtered.map((s) => (
-              <button key={s.id} className="sk-row" onClick={() => openSkill(s.id)} title={`Open “${s.title}”`}>
-                <span className="sk-rowicon" aria-hidden="true">{HAMMER}</span>
-                <span className="sk-rowbody">
-                  <div className="sk-rowname">{s.title}</div>
-                  <div className="sk-rowslug">{s.id}</div>
-                  {s.description && <div className="sk-rowdesc">{s.description}</div>}
-                  <ProvChips provenance={s.provenance} uses={s.uses} compat={instCompat[s.id]} />
-                </span>
-                <span className="sk-chev" aria-hidden="true">{CHEV}</span>
-              </button>
-            ))}
+            <InstalledRows rows={filtered} onOpen={openSkill} compatById={instCompat} />
           </div>
         )}
 
-        {skills !== null && systemPromptApps.length > 0 && (
+        {skills !== null && hasQuery && (
+          <div className="sk-results" aria-label="Skill search results">
+            <section aria-labelledby="installed-results-title">
+              <div className="sk-result-head">
+                <h2 className="sk-result-title" id="installed-results-title">Installed</h2>
+                <span className="sk-result-count">{filtered.length}</span>
+              </div>
+              {filtered.length > 0 ? (
+                <div className="sk-result-list">
+                  <InstalledRows rows={filtered} onOpen={openSkill} compatById={instCompat} />
+                </div>
+              ) : (
+                <p className="sk-result-empty">No installed skills match “{query}”.</p>
+              )}
+            </section>
+
+            <section aria-labelledby="registry-results-title">
+              <div className="sk-result-head">
+                <h2 className="sk-result-title" id="registry-results-title">Available in registry</h2>
+                {!registryBusy && !registryError && (
+                  <span className="sk-result-count">
+                    {registrySearch.matches.length < registrySearch.total
+                      ? `${registrySearch.matches.length} of ${registrySearch.total}`
+                      : registrySearch.total}
+                  </span>
+                )}
+              </div>
+              {registryBusy && registryItems === null ? (
+                <div className="sk-result-status" role="status"><div className="sk-spinner" />Loading registry…</div>
+              ) : registryError && registryItems === null ? (
+                <div>
+                  <p className="sk-result-empty">{registryError}</p>
+                  <button className="sk-retry" onClick={loadRegistry}>Try again</button>
+                </div>
+              ) : registrySearch.matches.length > 0 ? (
+                <div className="sk-result-list">
+                  <RegistryRows rows={registrySearch.matches} onOpen={openRegistrySkill} />
+                </div>
+              ) : (
+                <p className="sk-result-empty">No not-installed skills match “{query}”.</p>
+              )}
+              {registryError && registryItems !== null && (
+                <p className="sk-result-empty">Registry refresh failed; showing the last available index.</p>
+              )}
+            </section>
+          </div>
+        )}
+
+        {skills !== null && !hasQuery && systemPromptApps.length > 0 && (
           <section className="sk-system-apps" aria-labelledby="system-prompt-apps-title">
             <h2 className="sk-section-title" id="system-prompt-apps-title">Apps that extend the agent</h2>
             <p className="sk-section-copy">These installed apps add always-on instructions to the agent for as long as they stay installed. Start a new chat after installing or uninstalling one to be sure the agent is working from the latest set.</p>
@@ -1523,6 +1671,7 @@ export default function SkillsApp({ appId, token }) {
           canInstall={skillsMode === 'full'}
           onInstalled={acceptInstalledSkill}
           onClose={closeCatalog}
+          target={catalogTarget}
         />
       )}
     </div>

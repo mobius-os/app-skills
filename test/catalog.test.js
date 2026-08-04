@@ -18,6 +18,9 @@ import {
   resourceRelOk,
   installIdOf,
   normalizeSources,
+  parseCatalogIndex,
+  searchCatalog,
+  createCatalogIndexLoader,
   listInstalledFiles,
   installability,
   BLOCKING_CAVEATS,
@@ -348,6 +351,180 @@ test('normalizeSources rejects a control character in the path (URL-builder safe
   assert.equal(normalizeSources([{ repo: 'o/r', path: 'a\u001fb' }]).length, 0)
   // A legitimate hyphenated path is untouched.
   assert.equal(normalizeSources([{ repo: 'o/r', path: 'sub-dir/skills' }]).length, 1)
+})
+
+test('parseCatalogIndex reads grouped records and keeps exact install coordinates', () => {
+  const text = [
+    '# Skill catalogs index',
+    '',
+    '## Hermes bundled (NousResearch/hermes-agent/skills)',
+    '',
+    '- humanizer — Humanize text (without flattening voice). (NousResearch/hermes-agent skills/creative/humanizer @main)',
+    '- Bad Skill — This name cannot be installed. (NousResearch/hermes-agent skills/-bad @main)',
+    '',
+    '## Anthropic Skills (anthropics/skills/skills)',
+    '',
+    '- pdf — Fill PDFs. (anthropics/skills skills/pdf @v2)',
+  ].join('\n')
+
+  const items = parseCatalogIndex(text)
+  assert.equal(items.length, 3)
+  assert.deepEqual(items[0], {
+    key: 'NousResearch/hermes-agent:skills/creative/humanizer@main',
+    id: 'humanizer',
+    name: 'humanizer',
+    description: 'Humanize text (without flattening voice).',
+    repo: 'NousResearch/hermes-agent',
+    path: 'skills/creative/humanizer',
+    ref: 'main',
+    sourceLabel: 'Hermes bundled',
+  })
+  assert.equal(items[1].id, null, 'unsupported names remain discoverable but cannot masquerade as installable')
+  assert.equal(items[2].ref, 'v2')
+})
+
+test('parseCatalogIndex ignores malformed, unsafe, and duplicate records', () => {
+  const duplicate = '- pdf — Fill PDFs. (anthropics/skills skills/pdf @main)'
+  const items = parseCatalogIndex([
+    '## Source (anthropics/skills/skills)',
+    duplicate,
+    duplicate,
+    '- no divider (anthropics/skills skills/nope @main)',
+    '- traversal — Unsafe. (anthropics/skills ../escape @main)',
+    '- bad repo — Unsafe. (not-a-repo skills/x @main)',
+  ].join('\n'))
+  assert.deepEqual(items.map((item) => item.id), ['pdf'])
+})
+
+test('searchCatalog ranks matches, excludes installed ids, and reports the full count', () => {
+  const items = [
+    { key: '1', id: 'humanizer', name: 'humanizer', description: 'Edit prose', path: 'skills/humanizer', sourceLabel: 'Hermes', repo: 'o/r' },
+    { key: '2', id: 'human-tone', name: 'human-tone', description: 'Edit prose', path: 'skills/human-tone', sourceLabel: 'Hermes', repo: 'o/r' },
+    { key: '3', id: 'copy-editor', name: 'copy-editor', description: 'Make writing sound human', path: 'skills/copy-editor', sourceLabel: 'Writing', repo: 'o/r' },
+  ]
+  const result = searchCatalog(items, 'human', new Set(['humanizer']), 1)
+  assert.equal(result.total, 2)
+  assert.deepEqual(result.matches.map((item) => item.id), ['human-tone'])
+  assert.deepEqual(searchCatalog(items, '', new Set()), { matches: [], total: 0 })
+})
+
+test('catalog index loader publishes cached results before refresh settles', async () => {
+  let resolveRefresh
+  const refreshGate = new Promise((resolve) => { resolveRefresh = resolve })
+  let indexRead = 0
+  const committed = []
+  const fetchImpl = async (url) => {
+    if (url === '/api/skills/catalog-index/refresh') return refreshGate
+    if (url === '/api/storage/shared/skills/catalog-index.md') {
+      const name = indexRead++ === 0 ? 'cached-skill' : 'fresh-skill'
+      return {
+        ok: true,
+        text: async () => `## Source (owner/repo/skills)\n\n- ${name} — Useful. (owner/repo skills/${name} @main)`,
+      }
+    }
+    throw new Error(`unexpected ${url}`)
+  }
+  const loader = createCatalogIndexLoader({
+    fetchImpl,
+    onItems: (items) => committed.push(items.map((item) => item.id)),
+  })
+
+  const pending = loader.load({ Authorization: 'Bearer test' })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(committed, [['cached-skill']], 'cache is visible while refresh is still pending')
+
+  resolveRefresh({ ok: true })
+  const result = await pending
+  assert.deepEqual(committed, [['cached-skill'], ['fresh-skill']])
+  assert.deepEqual(result, { applied: true, ok: true, hadCache: true })
+})
+
+test('catalog index loader waits for refresh when no cache exists', async () => {
+  let indexRead = 0
+  const committed = []
+  const fetchImpl = async (url) => {
+    if (url === '/api/skills/catalog-index/refresh') return { ok: true }
+    if (url === '/api/storage/shared/skills/catalog-index.md') {
+      indexRead += 1
+      if (indexRead === 1) return { ok: false, status: 404 }
+      return {
+        ok: true,
+        text: async () => '## Source (owner/repo/skills)\n\n- first-skill — Useful. (owner/repo skills/first-skill @main)',
+      }
+    }
+    throw new Error(`unexpected ${url}`)
+  }
+  const result = await createCatalogIndexLoader({
+    fetchImpl,
+    onItems: (items) => committed.push(items.map((item) => item.id)),
+  }).load({})
+
+  assert.deepEqual(committed, [['first-skill']])
+  assert.deepEqual(result, { applied: true, ok: true, hadCache: false })
+})
+
+test('catalog index loader drops an older refresh after a newer load starts', async () => {
+  let resolveOlderRefresh
+  const olderRefresh = new Promise((resolve) => { resolveOlderRefresh = resolve })
+  const indexNames = ['older-cache', 'newer-cache', 'newer-fresh', 'older-fresh']
+  let indexRead = 0
+  let refreshRead = 0
+  const committed = []
+  const fetchImpl = async (url) => {
+    if (url === '/api/skills/catalog-index/refresh') {
+      return refreshRead++ === 0 ? olderRefresh : { ok: true }
+    }
+    if (url === '/api/storage/shared/skills/catalog-index.md') {
+      const name = indexNames[indexRead++]
+      return {
+        ok: true,
+        text: async () => `## Source (owner/repo/skills)\n\n- ${name} — Useful. (owner/repo skills/${name} @main)`,
+      }
+    }
+    throw new Error(`unexpected ${url}`)
+  }
+  const loader = createCatalogIndexLoader({
+    fetchImpl,
+    onItems: (items) => committed.push(items[0].id),
+  })
+
+  const older = loader.load({})
+  await new Promise((resolve) => setImmediate(resolve))
+  const newer = await loader.load({})
+  assert.equal(newer.applied, true)
+
+  resolveOlderRefresh({ ok: true })
+  const stale = await older
+  assert.equal(stale.applied, false)
+  assert.deepEqual(committed, ['older-cache', 'newer-cache', 'newer-fresh'])
+})
+
+test('catalog index loader keeps the last good cache when a refresh is degraded', async () => {
+  let indexRead = 0
+  const committed = []
+  const fetchImpl = async (url) => {
+    if (url === '/api/skills/catalog-index/refresh') return { ok: true }
+    if (url === '/api/storage/shared/skills/catalog-index.md') {
+      indexRead += 1
+      return {
+        ok: true,
+        text: async () => indexRead === 1
+          ? '## Source (owner/repo/skills)\n\n- cached-skill — Useful. (owner/repo skills/cached-skill @main)'
+          : '## Source (owner/repo/skills)\n\n_Scan failed: upstream rate limited_',
+      }
+    }
+    throw new Error(`unexpected ${url}`)
+  }
+  const result = await createCatalogIndexLoader({
+    fetchImpl,
+    onItems: (items) => committed.push(items.map((item) => item.id)),
+  }).load({})
+
+  assert.deepEqual(committed, [['cached-skill']], 'failed refresh must not replace the usable cache')
+  assert.equal(result.applied, true)
+  assert.equal(result.ok, true)
+  assert.equal(result.hadCache, true)
+  assert.match(result.error.message, /failed for 1 source/)
 })
 
 // --- listInstalledFiles: encoded, complete-or-no-verdict traversal ---

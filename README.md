@@ -12,6 +12,15 @@ skill shape (flat `<name>.md` and directory `<name>/SKILL.md`) with provenance
 counts. Tap a skill to read it as sanitized markdown (full markdown fetched
 lazily from shared storage).
 
+**One search, two sources** — the main search groups matching installed skills
+and not-yet-installed skills from the platform's cached catalog index. Registry
+rows open the existing catalog review flow, which pins the source revision and
+checks the complete skill before enabling Install; the search results do not
+create a faster, less-trusted install path. The last-known-good index appears
+before its freshness-gated background refresh finishes, so catalog scanning
+does not block search when a cache already exists. A refresh with failed source
+scans cannot replace the last-known-good results.
+
 **Owner-chosen chat** — the app does not open or prefill another chat. To find,
 create, or edit a custom skill with the agent, the owner starts that request in
 whichever chat they choose.
