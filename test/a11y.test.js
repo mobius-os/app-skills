@@ -8,10 +8,10 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 
 // Accessibility render test: the catalog card's open action must be a REAL,
 // focusable control — not a click-only div (WCAG 2.1.1). Renders the actual
-// CatalogCard through esbuild + react-dom/server, so the assertion is on the
+// CatalogCard through Rolldown + react-dom/server, so the assertion is on the
 // markup keyboard/SR users actually get.
 //
-// Needs the shell's frontend deps (react, react-dom, esbuild). CI provides
+// Needs the shell's frontend deps (react, react-dom, rolldown). CI provides
 // them via MOBIUS_FRONTEND_NODE_MODULES; locally a sibling mobius checkout
 // works too. Skips cleanly when neither is available — the pure suites don't
 // pay this cost.
@@ -20,7 +20,7 @@ function hasFrontendTestDeps(candidate) {
   if (!candidate) return false
   try {
     const requireFromCandidate = createRequire(join(candidate, 'noop.js'))
-    for (const name of ['react', 'react-dom/server', 'esbuild']) requireFromCandidate.resolve(name)
+    for (const name of ['react', 'react-dom/server', 'rolldown']) requireFromCandidate.resolve(name)
     return true
   } catch {
     return false
@@ -42,10 +42,11 @@ const nm = frontendNodeModules()
 
 test(
   'a11y: the catalog card opens through a real, focusable button',
-  { skip: nm ? false : 'frontend render deps unavailable (react, react-dom, esbuild)' },
+  { skip: nm ? false : 'frontend render deps unavailable (react, react-dom, rolldown)' },
   async () => {
     const require2 = createRequire(join(nm, 'noop.js'))
-    const esbuild = require2('esbuild')
+    // Möbius compiles mini-apps with Rolldown, so the test bundles the same way.
+    const { rolldown } = await import(pathToFileURL(require2.resolve('rolldown')).href)
 
     const workDir = mkdtempSync(join(tmpdir(), 'skills-a11y-'))
     try {
@@ -58,25 +59,27 @@ test(
         'export default { sanitize: (x) => x }\n',
       )
 
-      const built = await esbuild.build({
-        entryPoints: [fileURLToPath(new URL('../index.jsx', import.meta.url))],
-        bundle: true,
-        write: false,
-        format: 'esm',
-        loader: { '.jsx': 'jsx' },
-        jsx: 'automatic', // index.jsx never imports React itself
+      const build = await rolldown({
+        input: fileURLToPath(new URL('../index.jsx', import.meta.url)),
+        platform: 'node',
+        tsconfig: false,
+        transform: { jsx: 'react-jsx' }, // index.jsx never imports React itself
         external: ['react', 'react-dom', 'react/jsx-runtime'],
-        nodePaths: [nm],
-        alias: {
-          marked: join(workDir, 'marked-stub.mjs'),
-          dompurify: join(workDir, 'dompurify-stub.mjs'),
+        resolve: {
+          alias: {
+            marked: join(workDir, 'marked-stub.mjs'),
+            dompurify: join(workDir, 'dompurify-stub.mjs'),
+          },
+          modules: [nm, 'node_modules'],
         },
       })
+      const { output } = await build.generate({ format: 'es' })
+      await build.close()
       // Import the bundle from a dir whose node_modules is the frontend's, so
       // the react externals resolve to the exact packages the shell serves.
       symlinkSync(nm, join(workDir, 'node_modules'))
       const bundlePath = join(workDir, 'app.mjs')
-      writeFileSync(bundlePath, built.outputFiles[0].text)
+      writeFileSync(bundlePath, output[0].code)
       const { CatalogCard } = await import(pathToFileURL(bundlePath))
       assert.ok(CatalogCard, 'CatalogCard must stay exported for this test')
 
