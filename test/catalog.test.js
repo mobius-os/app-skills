@@ -39,6 +39,19 @@ test('DEFAULT_SOURCES: every entry is scannable (repo shape, label, ref)', () =>
   }
 })
 
+test('DEFAULT_SOURCES: Impeccable is available as a focused design catalog', () => {
+  assert.deepEqual(
+    DEFAULT_SOURCES.find((source) => source.label === 'Impeccable'),
+    {
+      label: 'Impeccable',
+      repo: 'pbakaus/impeccable',
+      path: '.claude/skills',
+      ref: 'main',
+      blurb: 'A focused frontend design toolkit for auditing, shaping, and polishing interfaces.',
+    },
+  )
+})
+
 test('sourceKey: distinguishes two subtrees of the same repo', () => {
   const bundled = { repo: 'NousResearch/hermes-agent', path: 'skills' }
   const optional = { repo: 'NousResearch/hermes-agent', path: 'optional-skills' }
@@ -281,8 +294,10 @@ test('prefetcher: cancel() stops the pool without starting another', async () =>
 test('resourceRelOk matches the backend contract case for case', () => {
   assert.ok(resourceRelOk('ref.md'))
   assert.ok(resourceRelOk('scripts/run.py'))
-  assert.ok(resourceRelOk('a/b/c/deep.md')) // 4 segments = at the cap
-  assert.ok(!resourceRelOk('a/b/c/d/deep.md')) // 5 segments — backend drops it
+  assert.ok(resourceRelOk('scripts/context.mjs'))
+  assert.ok(resourceRelOk('scripts/ui/card.tsx'))
+  assert.ok(resourceRelOk('a/b/c/d/e/f/g/deep.md')) // 8 segments = at the cap
+  assert.ok(!resourceRelOk('a/b/c/d/e/f/g/h/deep.md')) // 9 segments — backend drops it
   assert.ok(!resourceRelOk('../up.md'))
   assert.ok(!resourceRelOk('.hidden.md'))
   assert.ok(!resourceRelOk('dir/.hidden.md'))
@@ -292,11 +307,11 @@ test('resourceRelOk matches the backend contract case for case', () => {
   assert.ok(!resourceRelOk(''))
 })
 
-test('assessCompat: depth-5 and dot-prefixed files are dropped exactly like the installer', () => {
+test('assessCompat: depth-9 and dot-prefixed files are dropped exactly like the installer', () => {
   const tree = [
     blob(`${DIR}/SKILL.md`),
-    blob(`${DIR}/a/b/c/at-cap.md`), // 4 segments — installs
-    blob(`${DIR}/a/b/c/d/over.md`), // 5 segments — the backend drops this
+    blob(`${DIR}/a/b/c/d/e/f/g/at-cap.md`), // 8 segments — installs
+    blob(`${DIR}/a/b/c/d/e/f/g/h/over.md`), // 9 segments — the backend drops this
     blob(`${DIR}/.github/ci.yml`),
   ]
   const res = assessCompat(tree, DIR, OK_MD)
@@ -731,7 +746,7 @@ test('assessCompat: disallowed extensions and deep nesting are flagged as droppe
   const tree = [
     blob(`${DIR}/SKILL.md`),
     blob(`${DIR}/binary.wasm`),
-    blob(`${DIR}/a/b/c/d/e/deep.md`),
+    blob(`${DIR}/a/b/c/d/e/f/g/h/deep.md`),
   ]
   const res = assessCompat(tree, DIR, OK_MD)
   const dropped = res.caveats.find((c) => c.kind === 'dropped')
@@ -742,19 +757,28 @@ test('assessCompat: disallowed extensions and deep nesting are flagged as droppe
 
 test('assessCompat: over the file-count budget → installs partially', () => {
   const tree = [blob(`${DIR}/SKILL.md`)]
-  for (let i = 0; i < 30; i++) tree.push(blob(`${DIR}/ref-${i}.md`))
+  for (let i = 0; i < 257; i++) tree.push(blob(`${DIR}/ref-${i}.md`))
   const res = assessCompat(tree, DIR, OK_MD)
   const over = res.caveats.find((c) => c.kind === 'over-budget')
   assert.ok(over)
-  assert.match(over.text, /30 files \(max 24\)/)
+  assert.match(over.text, /257 files \(max 256\)/)
 })
 
 test('assessCompat: over the total-size budget → installs partially', () => {
-  const tree = [blob(`${DIR}/SKILL.md`), blob(`${DIR}/big.csv`, 3 * 1024 * 1024)]
+  const tree = [blob(`${DIR}/SKILL.md`), blob(`${DIR}/big.csv`, 9 * 1024 * 1024)]
   const res = assessCompat(tree, DIR, OK_MD)
   const over = res.caveats.find((c) => c.kind === 'over-budget')
   assert.ok(over)
-  assert.match(over.text, /max 2 MB/)
+  assert.match(over.text, /max 8 MB/)
+})
+
+test('assessCompat: command-routed toolkit packages fit whole', () => {
+  const tree = [blob(`${DIR}/SKILL.md`)]
+  for (let i = 0; i < 145; i++) tree.push(blob(`${DIR}/scripts/group-${i % 5}/helper-${i}.mjs`, 22 * 1024))
+  const res = assessCompat(tree, DIR, OK_MD)
+  assert.equal(res.caveats.some((c) => c.kind === 'dropped'), false)
+  assert.equal(res.caveats.some((c) => c.kind === 'over-budget'), false)
+  assert.ok(res.caveats.some((c) => c.kind === 'scripts'))
 })
 
 test('assessCompat: bundled scripts are an informational caveat', () => {
