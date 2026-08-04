@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 // Render-level regression tests for the catalog card's Install control, through
-// the same esbuild + react-dom/server harness as a11y.test.js. The install
+// the same Rolldown + react-dom/server harness as a11y.test.js. The install
 // button's enabled/label state is derived, so assert it on the real markup a
 // keyboard/SR user gets. Skips cleanly when the shell's frontend deps are
 // unavailable (CI sets MOBIUS_FRONTEND_NODE_MODULES; a sibling mobius checkout
@@ -17,7 +17,7 @@ function hasFrontendTestDeps(candidate) {
   if (!candidate) return false
   try {
     const requireFromCandidate = createRequire(join(candidate, 'noop.js'))
-    for (const name of ['react', 'react-dom/server', 'esbuild']) requireFromCandidate.resolve(name)
+    for (const name of ['react', 'react-dom/server', 'rolldown']) requireFromCandidate.resolve(name)
     return true
   } catch {
     return false
@@ -47,28 +47,33 @@ const isDisabled = (btn) => /\bdisabled\b/.test(btn)
 
 test(
   'catalog card: Install is disabled-and-unsupported / prop-driven installed state',
-  { skip: nm ? false : 'frontend render deps unavailable (react, react-dom, esbuild)' },
+  { skip: nm ? false : 'frontend render deps unavailable (react, react-dom, rolldown)' },
   async () => {
     const require2 = createRequire(join(nm, 'noop.js'))
-    const esbuild = require2('esbuild')
+    // Möbius compiles mini-apps with Rolldown, so the test bundles the same way.
+    const { rolldown } = await import(pathToFileURL(require2.resolve('rolldown')).href)
     const workDir = mkdtempSync(join(tmpdir(), 'skills-card-'))
     try {
       writeFileSync(join(workDir, 'marked-stub.mjs'), 'export const marked = { parse: () => "" }\n')
       writeFileSync(join(workDir, 'dompurify-stub.mjs'), 'export default { sanitize: (x) => x }\n')
-      const built = await esbuild.build({
-        entryPoints: [fileURLToPath(new URL('../index.jsx', import.meta.url))],
-        bundle: true, write: false, format: 'esm',
-        loader: { '.jsx': 'jsx' }, jsx: 'automatic',
+      const build = await rolldown({
+        input: fileURLToPath(new URL('../index.jsx', import.meta.url)),
+        platform: 'node', tsconfig: false,
+        transform: { jsx: 'react-jsx' },
         external: ['react', 'react-dom', 'react/jsx-runtime'],
-        nodePaths: [nm],
-        alias: {
-          marked: join(workDir, 'marked-stub.mjs'),
-          dompurify: join(workDir, 'dompurify-stub.mjs'),
+        resolve: {
+          alias: {
+            marked: join(workDir, 'marked-stub.mjs'),
+            dompurify: join(workDir, 'dompurify-stub.mjs'),
+          },
+          modules: [nm, 'node_modules'],
         },
       })
+      const { output } = await build.generate({ format: 'es' })
+      await build.close()
       symlinkSync(nm, join(workDir, 'node_modules'))
       const bundlePath = join(workDir, 'app.mjs')
-      writeFileSync(bundlePath, built.outputFiles[0].text)
+      writeFileSync(bundlePath, output[0].code)
       const { CatalogCard } = await import(pathToFileURL(bundlePath))
       const React = require2('react')
       const { renderToStaticMarkup } = require2('react-dom/server')
