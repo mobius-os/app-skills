@@ -69,6 +69,159 @@ export function normalizeSources(raw, { max = 12 } = {}) {
   return out
 }
 
+// Parse the platform-owned catalog-index.md into the lightweight records the
+// main Skills search needs. The index is already the shared, cached discovery
+// surface used by agents; consuming it here keeps one registry scan/cache
+// rather than teaching the app a second global crawler. Coordinates are
+// validated through the same source contract as the catalog browser before a
+// row can become interactive.
+export function parseCatalogIndex(text) {
+  const items = []
+  const seen = new Set()
+  let sourceLabel = ''
+
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const section = line.match(/^##\s+(.+?)\s+\([^)]+\)\s*$/)
+    if (section) {
+      sourceLabel = section[1].trim()
+      continue
+    }
+    if (!line.startsWith('- ')) continue
+
+    // Read coordinates from the RIGHT edge. Descriptions routinely contain
+    // parentheses, so splitting on the first "(" would corrupt real records.
+    const coordinates = line.match(/\s+\(([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s+(.+?)\s+@([^\s()]+)\)\s*$/)
+    if (!coordinates || coordinates.index == null) continue
+    const [, repo, path, ref] = coordinates
+    const summary = line.slice(2, coordinates.index)
+    const divider = summary.indexOf(' — ')
+    if (divider < 1) continue
+    const name = summary.slice(0, divider).trim()
+    const description = summary.slice(divider + 3).trim()
+    const [source] = normalizeSources([{ label: sourceLabel || repo, repo, path, ref }])
+    if (!source) continue
+    const key = `${repo}:${path}@${ref}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    items.push({
+      key,
+      id: installIdOf(path.split('/').pop()),
+      name,
+      description,
+      repo,
+      path,
+      ref,
+      sourceLabel: sourceLabel || repo,
+    })
+  }
+  return items
+}
+
+// Search only the not-yet-installed half of the registry. Ranking favors an
+// exact/prefix name before a description or source hit, while the result cap
+// keeps a broad one-letter query from mounting hundreds of rows at once.
+export function searchCatalog(items, query, existingIds = new Set(), max = 60) {
+  const q = String(query || '').trim().toLowerCase()
+  if (!q) return { matches: [], total: 0 }
+  const ids = existingIds instanceof Set ? existingIds : new Set(existingIds || [])
+  const scored = []
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || (item.id != null && ids.has(item.id))) continue
+    const name = String(item.name || '').toLowerCase()
+    const path = String(item.path || '').toLowerCase()
+    const description = String(item.description || '').toLowerCase()
+    const source = `${item.sourceLabel || ''} ${item.repo || ''}`.toLowerCase()
+    let score = null
+    if (name === q) score = 0
+    else if (name.startsWith(q)) score = 1
+    else if (name.includes(q) || path.includes(q)) score = 2
+    else if (description.includes(q)) score = 3
+    else if (source.includes(q)) score = 4
+    if (score != null) scored.push({ item, score })
+  }
+  scored.sort((a, b) => a.score - b.score || a.item.name.localeCompare(b.item.name))
+  return {
+    matches: scored.slice(0, Math.max(0, max)).map(({ item }) => item),
+    total: scored.length,
+  }
+}
+
+const CATALOG_INDEX_URL = '/api/storage/shared/skills/catalog-index.md'
+const CATALOG_REFRESH_URL = '/api/skills/catalog-index/refresh'
+
+async function fetchCatalogIndex(fetchImpl, headers) {
+  const res = await fetchImpl(CATALOG_INDEX_URL, { headers })
+  if (!res?.ok) throw new Error(`registry index ${res?.status}`)
+  const text = await res.text()
+  return {
+    items: parseCatalogIndex(text),
+    sourceCount: (text.match(/^##\s+/gm) || []).length,
+    failedSources: (text.match(/^_Scan failed:/gm) || []).length,
+  }
+}
+
+// Commit the last-known-good index before waiting for its freshness-gated
+// refresh. A missing cache still waits for refresh, while an older overlapping
+// load can never publish items or errors after a newer one starts.
+export function createCatalogIndexLoader({ fetchImpl, onItems }) {
+  let generation = 0
+
+  async function load(headers) {
+    const requestGeneration = ++generation
+    let hadCache = false
+
+    try {
+      const cached = await fetchCatalogIndex(fetchImpl, headers)
+      if (requestGeneration !== generation) return { applied: false, ok: true, hadCache: false }
+      // A partial older index is still useful while its refresh runs. An index
+      // containing only failed scans is not a usable cache.
+      if (cached.sourceCount > 0 && (cached.items.length > 0 || cached.failedSources === 0)) {
+        hadCache = true
+        onItems(cached.items)
+      }
+    } catch {
+      // No usable cache: the refresh + second read below remain the first-load path.
+    }
+
+    try {
+      const refresh = await fetchImpl(CATALOG_REFRESH_URL, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+      if (!refresh?.ok) throw new Error(`registry refresh ${refresh?.status}`)
+      const fresh = await fetchCatalogIndex(fetchImpl, headers)
+      if (requestGeneration !== generation) return { applied: false, ok: true, hadCache }
+      if (fresh.sourceCount === 0) throw new Error('registry refresh returned an invalid index')
+      if (fresh.failedSources > 0) {
+        // Do not let a rate limit or one broken source replace a complete cache.
+        // On a first-ever load, a nonempty partial index remains better than no
+        // registry at all and is surfaced with the refresh warning.
+        if (!hadCache && fresh.items.length > 0) {
+          hadCache = true
+          onItems(fresh.items)
+        }
+        throw new Error(`registry refresh failed for ${fresh.failedSources} source(s)`)
+      }
+      onItems(fresh.items)
+      return { applied: true, ok: true, hadCache }
+    } catch (error) {
+      return {
+        applied: requestGeneration === generation,
+        ok: hadCache,
+        hadCache,
+        error,
+      }
+    }
+  }
+
+  function invalidate() {
+    generation += 1
+  }
+
+  return { load, invalidate }
+}
+
 // One recursive git-trees call finds every SKILL.md in the repo — flat cards,
 // no folder drilling, no dead ends. This filters the raw tree down to skill
 // directories under the source's path prefix.

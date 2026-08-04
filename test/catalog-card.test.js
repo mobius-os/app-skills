@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -13,13 +13,24 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 // unavailable (CI sets MOBIUS_FRONTEND_NODE_MODULES; a sibling mobius checkout
 // also works).
 
+function hasFrontendTestDeps(candidate) {
+  if (!candidate) return false
+  try {
+    const requireFromCandidate = createRequire(join(candidate, 'noop.js'))
+    for (const name of ['react', 'react-dom/server', 'esbuild']) requireFromCandidate.resolve(name)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function frontendNodeModules() {
   const fromEnv = process.env.MOBIUS_FRONTEND_NODE_MODULES
-  if (fromEnv && existsSync(join(fromEnv, 'react'))) return fromEnv
+  if (hasFrontendTestDeps(fromEnv)) return fromEnv
   const here = fileURLToPath(new URL('.', import.meta.url))
   for (const rel of ['../.mobius/frontend/node_modules', '../../mobius/frontend/node_modules']) {
     const candidate = join(here, '..', rel)
-    if (existsSync(join(candidate, 'react'))) return candidate
+    if (hasFrontendTestDeps(candidate)) return candidate
   }
   return null
 }
@@ -36,7 +47,7 @@ const isDisabled = (btn) => /\bdisabled\b/.test(btn)
 
 test(
   'catalog card: Install is disabled-and-unsupported / prop-driven installed state',
-  { skip: nm ? false : 'frontend deps unavailable (set MOBIUS_FRONTEND_NODE_MODULES)' },
+  { skip: nm ? false : 'frontend render deps unavailable (react, react-dom, esbuild)' },
   async () => {
     const require2 = createRequire(join(nm, 'noop.js'))
     const esbuild = require2('esbuild')
