@@ -1,7 +1,7 @@
 {
   "id": "skills",
   "name": "Skills",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Browse and read your agent's skills, and grow them: install from public skill catalogs, or ask the agent to find the right one for you.",
   "author": "mobius-os",
   "license": "MIT",
