@@ -1498,7 +1498,7 @@ export default function SkillsApp({ appId, token }) {
       {syncPill}
       <header className="sk-header">
         <div className="sk-brand">
-          <span className="sk-mark">
+          <span className="sk-mark" ref={(el) => { if (el && window.mobius && window.mobius.immersive) window.mobius.immersive.holdToToggle(el) }}>
             {appId ? (
               <img
                 src={`/api/apps/${appId}/icon?size=64`}
