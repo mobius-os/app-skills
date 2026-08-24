@@ -96,7 +96,7 @@ const CSS = `
 
 /* mobius-ui:Header v1 — keep in sync; library candidate. */
 .sk-header { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; min-height: 48px;
-  padding: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+  padding: 0; background: var(--bg); }
 .sk-header-inner { width: 100%; max-width: 752px; margin-inline: auto; display: flex; align-items: center; gap: 12px;
   padding: max(12px, env(safe-area-inset-top)) 16px 12px; }
 .sk-brand { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
