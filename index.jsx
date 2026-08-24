@@ -96,7 +96,9 @@ const CSS = `
 
 /* mobius-ui:Header v1 — keep in sync; library candidate. */
 .sk-header { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; min-height: 48px;
-  padding: max(12px, env(safe-area-inset-top)) 16px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  padding: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.sk-header-inner { width: 100%; max-width: 752px; margin-inline: auto; display: flex; align-items: center; gap: 12px;
+  padding: max(12px, env(safe-area-inset-top)) 16px 12px; }
 .sk-brand { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
 .sk-mark { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px; display: flex;
   align-items: center; justify-content: center; overflow: hidden; color: var(--accent); }
@@ -1497,6 +1499,7 @@ export default function SkillsApp({ appId, token }) {
       <style>{CSS}</style>
       {syncPill}
       <header className="sk-header">
+        <div className="sk-header-inner">
         <div className="sk-brand">
           <span className="sk-mark" ref={(el) => { if (el && window.mobius && window.mobius.immersive) window.mobius.immersive.holdToToggle(el) }}>
             {appId ? (
@@ -1529,6 +1532,7 @@ export default function SkillsApp({ appId, token }) {
         <button className={`sk-iconbtn${refreshing ? ' is-spinning' : ''}`} onClick={refresh} disabled={refreshing} aria-label="Refresh skills">
           {REFRESH}<span className="sk-tip" aria-hidden="true">Refresh – update the skills list</span>
         </button>
+        </div>
       </header>
 
       <div className="sk-scroll" ref={mainScrollRef}>
