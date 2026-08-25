@@ -1546,7 +1546,7 @@ export default function SkillsApp({ appId, token }) {
           <div className="sk-searchwrap">
             <div className="sk-search">
               {SEARCH}
-              <input className="sk-input" type="search" value={query} placeholder="Search installed and registry skills…"
+              <input className="sk-input" type="search" autoFocus value={query} placeholder="Search installed and registry skills…"
                 onChange={(e) => setQuery(e.target.value)} aria-label="Search installed and registry skills" />
             </div>
           </div>
