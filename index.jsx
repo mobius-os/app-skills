@@ -96,9 +96,9 @@ const CSS = `
 
 /* mobius-ui:Header v1 — keep in sync; library candidate. */
 .sk-header { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; min-height: 48px;
-  padding: 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+  padding: 0; background: var(--bg); }
 .sk-header-inner { width: 100%; max-width: 760px; margin-inline: auto; display: flex; align-items: center; gap: 12px;
-  padding: max(12px, env(safe-area-inset-top)) 16px 12px; }
+  padding: max(12px, env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--border); }
 .sk-brand { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
 .sk-mark { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px; display: flex;
   align-items: center; justify-content: center; overflow: hidden; color: var(--accent); }
