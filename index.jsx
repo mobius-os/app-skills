@@ -508,7 +508,7 @@ export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, can
 // The catalog screen: curated sources → one git-trees scan each → flat cards.
 // Rendered as a hidden-not-unmounted overlay so scan results and scroll
 // survive closing and reopening it.
-function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstalled, onClose, target }) {
+function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onInstalled, onClose, target }) {
   const [sources, setSources] = useState(DEFAULT_SOURCES)
   const [open, setOpen] = useState(null) // { source } | null = source list
   const [skillList, setSkillList] = useState(null)
@@ -703,7 +703,8 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
         body: JSON.stringify({
           repo: source.repo,
           path: dir,
-          ref: open?.oid || source.ref || 'main',
+          ref: source.ref || 'main',
+          expected_commit: open?.oid,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -727,6 +728,45 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
     }
   }
 
+  const update = async (source, dir, existing) => {
+    if (!canInstall || !existing?.treeDigest) return
+    const opToken = open?.token
+    setBusyDir(dir); setError(null); setNotice(null)
+    try {
+      const res = await fetch(`/api/skills/${encodeURIComponent(existing.id)}`, {
+        method: 'PUT',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expected_tree_digest: existing.treeDigest,
+          repo: source.repo,
+          path: dir,
+          ref: source.ref || 'main',
+          expected_commit: open?.oid,
+          adopt: existing.provenance === 'agent',
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || `update failed (${res.status})`)
+      if (!data?.skill?.id) throw new Error('update succeeded without a skill result')
+      window.mobius?.signal?.('skill_updated', {
+        slug: data.skill.id,
+        source: source.repo,
+        changed: !!data.changed,
+      })
+      await onInstalled(data.skill)
+      if (guardRef.current.isCurrent(opToken)) {
+        setNotice(data.changed
+          ? `Updated "${data.skill.name}" — the previous version is preserved in git history.`
+          : `"${data.skill.name}" is already current and is now managed by Skills.`)
+      }
+    } catch (e) {
+      if (guardRef.current.isCurrent(opToken)) setError(String(e?.message || e))
+      window.mobius?.signal?.('error', { message: String(e?.message || e), source: 'skill_update' })
+    } finally {
+      setBusyDir((cur) => (cur === dir ? null : cur))
+    }
+  }
+
   const shown = useMemo(() => {
     if (!skillList) return null
     const q = filter.trim().toLowerCase()
@@ -742,8 +782,12 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
   // uninstall. No session-local overlay, so this never lies "Installed" about a
   // skill that was removed elsewhere.
   const detailIdForInstalled = detailName ? installIdOf(detailName) : null
-  const detailInstalled = detailIdForInstalled != null
-    && existingIds.has(detailIdForInstalled)
+  const detailExisting = detailIdForInstalled != null
+    ? existingSkills.get(detailIdForInstalled) || null
+    : null
+  const detailInstalled = detailExisting != null
+  const detailCanUpdate = detailExisting?.treeDigest
+    && (isUninstallable(detailExisting.provenance) || detailExisting.provenance === 'agent')
   const detailEntry = detailDir ? descs[detailDir] : null
   const detailLoaded = detailEntry && detailEntry !== 'loading' && detailEntry !== 'failed'
   const detailHtml = useMemo(() => {
@@ -842,17 +886,25 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
                 result is anything but installable. */}
             <button
               className="sk-btn"
-              disabled={!canInstall || busyDir !== null || detailInstalled || detailInst.status !== 'installable' || !detailLoaded}
-              onClick={() => install(open.source, detailDir)}
+              disabled={!canInstall || busyDir !== null || (detailInstalled && !detailCanUpdate) || detailInst.status !== 'installable' || !detailLoaded}
+              onClick={() => (detailInstalled
+                ? update(open.source, detailDir, detailExisting)
+                : install(open.source, detailDir))}
               title={
                 !canInstall ? 'Catalog installs need a newer Möbius version'
                   : detailInst.status === 'unsupported' ? detailInst.reason
-                  : detailInstalled ? 'Already in your agent’s skills'
+                  : detailInstalled && !detailCanUpdate ? 'This skill is managed by its app or the platform'
+                    : detailInstalled ? 'Replace this skill with the reviewed catalog revision'
                     : detailInst.status === 'loading' || !detailLoaded ? 'Install unlocks once the skill has loaded'
                       : 'Install this skill for your agent'
               }
             >
-              {!canInstall ? 'Update needed' : detailInst.status === 'unsupported' ? 'Unsupported' : detailInstalled ? 'Installed' : busyDir === detailDir ? 'Installing…' : 'Install'}
+              {!canInstall ? 'Update needed'
+                : detailInst.status === 'unsupported' ? 'Unsupported'
+                  : busyDir === detailDir ? (detailInstalled ? 'Updating…' : 'Installing…')
+                    : detailInstalled && detailCanUpdate ? 'Update'
+                      : detailInstalled ? 'Managed elsewhere'
+                        : 'Install'}
             </button>
             <a
               className="sk-iconbtn"
@@ -958,7 +1010,7 @@ function CatalogScreen({ visible, authHeaders, existingIds, canInstall, onInstal
                       key={s.dir}
                       skill={s}
                       desc={descs[s.dir]}
-                      installed={existingIds.has(s.id)}
+                      installed={existingSkills.has(s.id)}
                       busy={busyDir === s.dir}
                       anyBusy={busyDir !== null}
                       compat={compatByDir[s.dir] || null}
@@ -1201,6 +1253,11 @@ export default function SkillsApp({ appId, token }) {
       source,
       dir: skill.path,
     })
+    // Detail and catalog are sibling full-screen surfaces, each with one host
+    // back sentinel. Retire the detail sentinel before asking the catalog to
+    // own the next one; stacking both leaves the second push rejected and the
+    // visible tap looking inert.
+    if (selected) closeSkill()
     openCatalog()
   }
 
@@ -1363,7 +1420,11 @@ export default function SkillsApp({ appId, token }) {
     window.mobius?.signal?.('error', { message: `blocked link (${link.reason})`, source: 'skill_link' })
   }
 
-  const existingIds = useMemo(() => new Set((skills || []).map((s) => s.id)), [skills])
+  const existingSkills = useMemo(
+    () => new Map((skills || []).map((s) => [s.id, s])),
+    [skills],
+  )
+  const existingIds = useMemo(() => new Set(existingSkills.keys()), [existingSkills])
   const hasQuery = query.trim().length > 0
   const filtered = useMemo(() => {
     if (!skills) return []
@@ -1408,6 +1469,9 @@ export default function SkillsApp({ appId, token }) {
       return ''
     }
   }, [detailParsed, skillsMode])
+  const registryMatch = current && registryItems
+    ? registryItems.find((item) => item.id === current.id) || null
+    : null
 
   const syncPill = !online
     ? <div className="sk-sync-pill" role="status">Offline</div>
@@ -1445,6 +1509,9 @@ export default function SkillsApp({ appId, token }) {
         <div className="sk-scroll" ref={mainScrollRef}>
           <div className="sk-detailmeta">
             <ProvChips provenance={current.provenance} uses={current.uses} />
+            {detailParsed?.version && (
+              <span className="sk-uses">version {detailParsed.version}</span>
+            )}
             {current.commit && current.sourceRepo && current.sourcePath && (
               /* the exact reviewed+installed revision — same OID the catalog
                  pinned at install time, straight from provenance. Built through
@@ -1470,6 +1537,12 @@ export default function SkillsApp({ appId, token }) {
                 ⚠ {compatInfo.caveats.length} {compatInfo.caveats.length === 1 ? 'thing' : 'things'} to know
               </button>
             ))}
+            {skillsMode === 'full' && registryMatch && current.treeDigest
+              && (removable || current.provenance === 'agent') && (
+              <button className="sk-btn ghost" onClick={() => openRegistrySkill(registryMatch)}>
+                Review update
+              </button>
+            )}
           </div>
           {compatInfo && !compatInfo.ok && showInstCaveats && (
             <ul className="sk-caveats in-page" role="status">
@@ -1676,7 +1749,7 @@ export default function SkillsApp({ appId, token }) {
         <CatalogScreen
           visible={catalogOpen}
           authHeaders={authHeaders}
-          existingIds={existingIds}
+          existingSkills={existingSkills}
           canInstall={skillsMode === 'full'}
           onInstalled={acceptInstalledSkill}
           onClose={closeCatalog}

@@ -56,6 +56,7 @@ export function parseSkill(name, content) {
     name,
     title,
     description: description.trim() || meta.description || '',
+    version: meta.version || '',
     content: text,
   }
 }
@@ -165,6 +166,7 @@ export function mapSkillRows(data) {
         sourceRepo: typeof s?.source_repo === 'string' ? s.source_repo : null,
         sourcePath: typeof s?.source_path === 'string' ? s.source_path : null,
         sourceUrl: typeof s?.source_url === 'string' ? s.source_url : null,
+        treeDigest: typeof s?.tree_digest === 'string' ? s.tree_digest : null,
         // The installer-owned bounded file inventory (relative paths incl.
         // SKILL.md), authoritative and complete when present — preferred over
         // the shared-list walk, which can silently omit names. null for skills
