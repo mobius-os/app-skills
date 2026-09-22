@@ -307,7 +307,7 @@ const CSS = `
   gap: 8px; flex-wrap: wrap; word-break: break-word; }
 .sk-carddesc { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
 .sk-cardbtns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.sk-btn { min-height: 40px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--accent);
+.sk-btn { min-height: 44px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--accent);
   background: var(--accent); color: var(--accent-fg, #fff); font-family: var(--font); font-size: 13.5px;
   font-weight: 600; cursor: pointer; }
 .sk-btn:disabled { opacity: 0.5; cursor: default; }
@@ -528,12 +528,20 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
   const prefetcherRef = useRef(null)
   const compatCacheRef = useRef({}) // dir -> assessCompat result, per source scan
   const scrollRef = useRef(null)
+  const backRef = useRef(null)
   const listScrollRef = useRef(0) // card-list offset, restored when a page closes
   // Every scan takes a generation token; a response carrying a stale token is
   // dropped, so a slow source A can never overwrite state after B is current.
   const guardRef = useRef(null)
   if (!guardRef.current) guardRef.current = createGenerationGuard()
   const consumedTargetRef = useRef(null)
+
+  // The catalog is a sibling full-screen surface over the installed list. Its
+  // first visible control owns focus immediately; no hidden list control can
+  // become the active element during the transition.
+  useEffect(() => {
+    if (visible) backRef.current?.focus()
+  }, [visible])
 
   useEffect(() => {
     // Sources are app data: a saved sources.json overrides the defaults, so
@@ -850,7 +858,7 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
   return (
     <div className="sk-cat" style={visible ? undefined : { display: 'none' }} aria-hidden={!visible}>
       <div className="sk-detail-head">
-        <button className="sk-back" onClick={onClose} aria-label="Back to skills">
+        <button ref={backRef} className="sk-back" onClick={onClose} aria-label="Back to skills">
           {BACK}<span>Skills</span>
         </button>
         {/* Full breadcrumb chain — tap any ancestor to jump straight back to it. */}
@@ -1581,7 +1589,7 @@ export default function SkillsApp({ appId, token }) {
     <div className="sk-root">
       <style>{CSS}</style>
       {syncPill}
-      <header className="sk-header">
+      <header className="sk-header" aria-hidden={catalogOpen ? 'true' : undefined} inert={catalogOpen}>
         <div className="sk-header-inner">
         <div className="sk-brand">
           <span className="sk-mark">
@@ -1618,7 +1626,7 @@ export default function SkillsApp({ appId, token }) {
         </div>
       </header>
 
-      <div className="sk-scroll" ref={mainScrollRef}>
+      <div className="sk-scroll" ref={mainScrollRef} aria-hidden={catalogOpen ? 'true' : undefined} inert={catalogOpen}>
         <div className="sk-page">
         {skills !== null && (
           <div className="sk-searchwrap">
