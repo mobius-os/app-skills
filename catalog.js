@@ -303,8 +303,10 @@ function suffixOf(path) {
 }
 
 function isScriptResource(path) {
-  return String(path || '').startsWith('scripts/')
-    && (SCRIPT_SUFFIXES.includes(suffixOf(path)) || suffixOf(path) === '')
+  const value = String(path || '')
+  const suffix = suffixOf(value)
+  return SCRIPT_SUFFIXES.includes(suffix)
+    || (value.startsWith('scripts/') && suffix === '')
 }
 
 // EXACT mirror of the backend's per-file rule (_resource_rel_ok): 1..8 plain
@@ -369,17 +371,44 @@ export function relativeRefs(raw) {
 export function assessCompat(tree, dir, raw) {
   const caveats = []
   const prefix = `${String(dir || '').replace(/\/+$/g, '')}/`
-  const files = (Array.isArray(tree) ? tree : [])
-    .filter((t) => t?.type === 'blob' && typeof t?.path === 'string' && t.path.startsWith(prefix))
-    .map((t) => ({ rel: t.path.slice(prefix.length), size: Number(t.size) || 0 }))
-
+  const entries = (Array.isArray(tree) ? tree : [])
+    .filter((entry) => typeof entry?.path === 'string' && entry.path.startsWith(prefix))
   const kept = []
-  const dropped = []
-  let skillBytes = 0
-  for (const f of files) {
-    if (/^skill\.md$/i.test(f.rel)) { skillBytes = f.size; continue }
-    ;(resourceRelOk(f.rel) ? kept : dropped).push(f)
+  const invalidResources = []
+  const invalidEntries = []
+  const invalidExecutables = []
+  const skillEntries = []
+  const seen = new Set()
+  for (const entry of entries) {
+    if (entry.type === 'tree') continue
+    const rel = entry.path.slice(prefix.length)
+    if (
+      entry.type !== 'blob'
+      || !['100644', '100755'].includes(entry.mode)
+      || !Number.isInteger(entry.size)
+      || entry.size < 0
+      || seen.has(rel)
+    ) {
+      invalidEntries.push(rel || entry.path)
+      continue
+    }
+    seen.add(rel)
+    if (/^skill\.md$/i.test(rel)) {
+      skillEntries.push(entry)
+      if (entry.mode === '100755') invalidExecutables.push(rel)
+      continue
+    }
+    if (!resourceRelOk(rel)) {
+      invalidResources.push(rel)
+      continue
+    }
+    if (entry.mode === '100755' && !(rel.startsWith('scripts/') && isScriptResource(rel))) {
+      invalidExecutables.push(rel)
+      continue
+    }
+    kept.push({ rel, size: entry.size })
   }
+  let skillBytes = skillEntries.length === 1 ? skillEntries[0].size : 0
   // The tree blob size is the authoritative byte count; fall back to the raw
   // text's UTF-8 length when the tree omits it.
   if (!skillBytes && raw) {
@@ -396,9 +425,36 @@ export function assessCompat(tree, dir, raw) {
     })
   }
 
-  // Install materializes resources in order and stops adding once over budget;
-  // predicting the exact survivors would overfit, so over-budget is its own
-  // "installs partially" caveat instead.
+  if (skillEntries.length !== 1) {
+    caveats.push({
+      kind: 'invalid-entry',
+      text: skillEntries.length
+        ? 'This package contains more than one case-variant of SKILL.md, so Möbius rejects the whole package.'
+        : 'This package has no root SKILL.md, so Möbius cannot install it.',
+    })
+  }
+  if (invalidEntries.length) {
+    caveats.push({
+      kind: 'invalid-entry',
+      text: `${invalidEntries.length} package ${invalidEntries.length === 1 ? 'entry is' : 'entries are'} not a supported regular file (${nameSome(invalidEntries)}), so Möbius rejects the whole package.`,
+    })
+  }
+  if (invalidResources.length) {
+    caveats.push({
+      kind: 'invalid-resource',
+      text: `${invalidResources.length} package ${invalidResources.length === 1 ? 'path is' : 'paths are'} unsafe, too deep, or not an installable text resource (${nameSome(invalidResources)}), so Möbius rejects the whole package.`,
+    })
+  }
+  if (invalidExecutables.length) {
+    caveats.push({
+      kind: 'invalid-executable',
+      text: `${nameSome(invalidExecutables)} ${invalidExecutables.length === 1 ? 'is' : 'are'} executable outside the supported scripts launcher contract, so Möbius rejects the whole package.`,
+    })
+  }
+
+  // A package is one reviewed tree. The backend rejects the whole tree before
+  // fetching resources when either bound is exceeded; the catalog must never
+  // advertise a best-effort partial install that cannot occur.
   const total = kept.reduce((n, f) => n + f.size, 0)
   const overCount = kept.length > INSTALL_LIMITS.maxFiles
   const overSize = total > INSTALL_LIMITS.maxTotalBytes
@@ -415,19 +471,13 @@ export function assessCompat(tree, dir, raw) {
       text: `Its instructions mention files that won't be there after install (${nameSome(brokenRefs)}), so the steps that use them may not work.`,
     })
   }
-  if (dropped.length) {
-    caveats.push({
-      kind: 'dropped',
-      text: `${dropped.length} extra ${dropped.length === 1 ? 'file' : 'files'} won't be copied — Möbius only installs common text files, and ${dropped.length === 1 ? 'this one is' : 'these are'} a different type or buried too deep: ${nameSome(dropped.map((f) => f.rel))}. The main instructions still install fine.`,
-    })
-  }
   if (overCount || overSize) {
     const parts = []
     if (overCount) parts.push(`${kept.length} files (max ${INSTALL_LIMITS.maxFiles})`)
     if (overSize) parts.push(`${(total / (1024 * 1024)).toFixed(1)} MB (max ${INSTALL_LIMITS.maxTotalBytes / (1024 * 1024)} MB)`)
     caveats.push({
       kind: 'over-budget',
-      text: `This skill is bigger than Möbius's install limit — ${parts.join(', ')} — so only part of it will be copied.`,
+      text: `This skill exceeds Möbius's install limit — ${parts.join(', ')} — so Möbius rejects the whole package.`,
     })
   }
 
@@ -445,12 +495,15 @@ export function assessCompat(tree, dir, raw) {
   return { ok: caveats.length === 0, caveats }
 }
 
-// Caveats the backend treats as a HARD reject rather than a partial install:
-// the install cannot succeed at all, so the skill must present as unsupported
-// (Install disabled) — never an amber-but-runnable action. A SKILL.md over the
-// fetch cap is rejected outright by the installer; the rest (dropped resources,
-// over-budget, scripts, missing summary) still install, just partially.
-export const BLOCKING_CAVEATS = new Set(['skill-too-large'])
+// Caveats the backend treats as a HARD reject: one skill is one reviewed tree,
+// so no unsupported member or exceeded bound can degrade into a partial install.
+export const BLOCKING_CAVEATS = new Set([
+  'skill-too-large',
+  'invalid-entry',
+  'invalid-resource',
+  'invalid-executable',
+  'over-budget',
+])
 
 // One closed installability result for a catalog entry — the SINGLE source the
 // Install control derives from, never the mere presence of a compat object:
@@ -471,7 +524,15 @@ export function installability(skill, compat) {
   }
   if (!compat) return { status: 'loading', reason: '', chip: '' }
   const blocking = compat.caveats.find((c) => BLOCKING_CAVEATS.has(c.kind))
-  if (blocking) return { status: 'unsupported', reason: blocking.text, chip: 'Too large' }
+  if (blocking) {
+    return {
+      status: 'unsupported',
+      reason: blocking.text,
+      chip: ['skill-too-large', 'over-budget'].includes(blocking.kind)
+        ? 'Too large'
+        : 'Unsupported package',
+    }
+  }
   return { status: 'installable', reason: '', chip: '' }
 }
 
