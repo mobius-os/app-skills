@@ -794,6 +794,17 @@ test('assessCompat: bundled scripts are an informational caveat', () => {
   assert.match(scripts.text, /nothing runs automatically/)
 })
 
+test('assessCompat: script suffixes warn outside the scripts directory too', () => {
+  const raw = '# Tool\n\nUse the helpers.\n'
+  const tree = [
+    { type: 'blob', path: 'tool/SKILL.md', size: raw.length },
+    { type: 'blob', path: 'tool/tool.py', size: 4 },
+    { type: 'blob', path: 'tool/helpers/run.sh', size: 4 },
+  ]
+  const scripts = assessCompat(tree, 'tool', raw).caveats.find((c) => c.kind === 'scripts')
+  assert.match(scripts.text, /2 helper scripts/)
+})
+
 test('assessCompat: missing frontmatter description is flagged', () => {
   const tree = [blob(`${DIR}/SKILL.md`)]
   const res = assessCompat(tree, DIR, '# PDF skill\n\nJust a body.\n')
@@ -855,6 +866,11 @@ test('assessInstalled: installed scripts are the informational caveat', () => {
   const scripts = res.caveats.find((c) => c.kind === 'scripts')
   assert.match(scripts.text, /nothing runs automatically/)
   assert.equal(res.caveats.find((c) => c.kind === 'broken-refs'), undefined)
+})
+
+test('assessInstalled: script suffixes warn at any installed path', () => {
+  const result = assessInstalled(['SKILL.md', 'tool.py', 'helpers/run.sh'], '# Tool\n\nReady.\n')
+  assert.match(result.caveats.find((c) => c.kind === 'scripts').text, /2 helper scripts/)
 })
 
 test('assessInstalled: flat skill (no files) with plain prose and a description is ok', () => {

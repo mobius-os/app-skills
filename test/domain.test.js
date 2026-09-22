@@ -15,6 +15,8 @@ import {
   skillContentPath,
   provenanceChip,
   isUninstallable,
+  catalogUpdateTarget,
+  catalogEntryForInstalled,
   skillDisplayTitle,
   usageLabel,
 } from '../domain.js'
@@ -237,6 +239,46 @@ test('isUninstallable: only installed:* provenance may be removed in-app', () =>
   assert.equal(isUninstallable('agent'), false)
   assert.equal(isUninstallable('app:memory'), false)
   assert.equal(isUninstallable(undefined), false)
+})
+
+test('catalogUpdateTarget: managed skills match exact source coordinates before id', () => {
+  const custom = {
+    id: 'my-pdf-tools', provenance: 'installed:o/r', sourceRepo: 'o/r',
+    sourcePath: '/skills/pdf/', treeDigest: 'sha256-tree-v1:custom',
+  }
+  const colliding = {
+    id: 'pdf', provenance: 'installed:elsewhere/r', sourceRepo: 'elsewhere/r',
+    sourcePath: 'skills/pdf', treeDigest: 'sha256-tree-v1:collision',
+  }
+  const rows = new Map([[custom.id, custom], [colliding.id, colliding]])
+  assert.equal(catalogUpdateTarget(rows, { repo: 'o/r' }, 'skills/pdf', 'pdf'), custom)
+})
+
+test('catalogUpdateTarget: basename fallback is only for explicit agent adoption', () => {
+  const agent = { id: 'pdf', provenance: 'agent', treeDigest: 'sha256-tree-v1:agent' }
+  assert.equal(catalogUpdateTarget([agent], { repo: 'o/r' }, 'skills/pdf', 'pdf'), agent)
+  const otherManaged = {
+    id: 'pdf', provenance: 'installed:other/r', sourceRepo: 'other/r',
+    sourcePath: 'skills/pdf', treeDigest: 'sha256-tree-v1:other',
+  }
+  assert.equal(catalogUpdateTarget([otherManaged], { repo: 'o/r' }, 'skills/pdf', 'pdf'), null)
+})
+
+test('catalogEntryForInstalled: custom managed names use provenance coordinates', () => {
+  const exact = { id: 'pdf', repo: 'o/r', path: 'skills/pdf' }
+  const idCollision = { id: 'my-pdf', repo: 'other/r', path: 'skills/my-pdf' }
+  const installed = {
+    id: 'my-pdf', provenance: 'installed:o/r', sourceRepo: 'o/r',
+    sourcePath: '/skills/pdf/',
+  }
+  assert.equal(catalogEntryForInstalled([idCollision, exact], installed), exact)
+  assert.equal(catalogEntryForInstalled([idCollision], installed), null)
+})
+
+test('catalogEntryForInstalled: id fallback is reserved for agent adoption', () => {
+  const item = { id: 'pdf', repo: 'o/r', path: 'skills/pdf' }
+  assert.equal(catalogEntryForInstalled([item], { id: 'pdf', provenance: 'agent' }), item)
+  assert.equal(catalogEntryForInstalled([item], { id: 'pdf', provenance: 'seed' }), null)
 })
 
 test('skillDisplayTitle: slugs become Title Case; real names pass through', () => {

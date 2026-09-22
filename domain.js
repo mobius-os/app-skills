@@ -367,6 +367,46 @@ export function isUninstallable(provenance) {
   return typeof provenance === 'string' && provenance.startsWith('installed:')
 }
 
+// Resolve the existing skill a catalog entry may update. Installer-managed
+// skills are identified by their authoritative source coordinates, not by the
+// catalog basename: owners may have installed the same source under a custom
+// local name. Basename fallback is deliberately limited to agent-owned skills,
+// where it represents the explicit adoption flow. A managed skill with the
+// same basename but a different source is a collision, never an update target.
+export function catalogUpdateTarget(skills, source, path, installId) {
+  const rows = skills instanceof Map
+    ? [...skills.values()]
+    : (Array.isArray(skills) ? skills : [])
+  const repo = typeof source?.repo === 'string' ? source.repo : ''
+  const sourcePath = String(path || '').replace(/^\/+|\/+$/g, '')
+  const managed = rows.find((skill) => (
+    isUninstallable(skill?.provenance)
+    && skill?.sourceRepo === repo
+    && String(skill?.sourcePath || '').replace(/^\/+|\/+$/g, '') === sourcePath
+  ))
+  if (managed) return managed
+  const byId = rows.find((skill) => skill?.id === installId)
+  return byId?.provenance === 'agent' ? byId : null
+}
+
+// Inverse lookup for the installed-detail “Review update” action. Managed
+// provenance has exact repo/path coordinates and must use them; only an
+// agent-owned local skill is eligible for basename-based adoption.
+export function catalogEntryForInstalled(items, skill) {
+  const entries = Array.isArray(items) ? items : []
+  if (isUninstallable(skill?.provenance)) {
+    const path = String(skill?.sourcePath || '').replace(/^\/+|\/+$/g, '')
+    return entries.find((item) => (
+      item?.repo === skill?.sourceRepo
+      && String(item?.path || '').replace(/^\/+|\/+$/g, '') === path
+    )) || null
+  }
+  if (skill?.provenance === 'agent') {
+    return entries.find((item) => item?.id === skill?.id) || null
+  }
+  return null
+}
+
 // API skill names are usually slugs; render a readable title without mangling
 // a name that already carries real casing or spacing.
 export function skillDisplayTitle(name) {

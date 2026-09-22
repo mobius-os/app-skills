@@ -23,6 +23,8 @@ import {
   skillContentPath,
   provenanceChip,
   isUninstallable,
+  catalogUpdateTarget,
+  catalogEntryForInstalled,
   usageLabel,
 } from './domain.js'
 import {
@@ -782,12 +784,15 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
   // uninstall. No session-local overlay, so this never lies "Installed" about a
   // skill that was removed elsewhere.
   const detailIdForInstalled = detailName ? installIdOf(detailName) : null
-  const detailExisting = detailIdForInstalled != null
+  const detailUpdateTarget = detailIdForInstalled != null
+    ? catalogUpdateTarget(existingSkills, open?.source, detailDir, detailIdForInstalled)
+    : null
+  const detailIdCollision = detailIdForInstalled != null
     ? existingSkills.get(detailIdForInstalled) || null
     : null
+  const detailExisting = detailUpdateTarget || detailIdCollision
   const detailInstalled = detailExisting != null
-  const detailCanUpdate = detailExisting?.treeDigest
-    && (isUninstallable(detailExisting.provenance) || detailExisting.provenance === 'agent')
+  const detailCanUpdate = !!(detailUpdateTarget?.treeDigest)
   const detailEntry = detailDir ? descs[detailDir] : null
   const detailLoaded = detailEntry && detailEntry !== 'loading' && detailEntry !== 'failed'
   const detailHtml = useMemo(() => {
@@ -888,7 +893,7 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
               className="sk-btn"
               disabled={!canInstall || busyDir !== null || (detailInstalled && !detailCanUpdate) || detailInst.status !== 'installable' || !detailLoaded}
               onClick={() => (detailInstalled
-                ? update(open.source, detailDir, detailExisting)
+                ? update(open.source, detailDir, detailUpdateTarget)
                 : install(open.source, detailDir))}
               title={
                 !canInstall ? 'Catalog installs need a newer Möbius version'
@@ -1010,7 +1015,7 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
                       key={s.dir}
                       skill={s}
                       desc={descs[s.dir]}
-                      installed={existingSkills.has(s.id)}
+                      installed={existingSkills.has(s.id) || !!catalogUpdateTarget(existingSkills, open.source, s.dir, s.id)}
                       busy={busyDir === s.dir}
                       anyBusy={busyDir !== null}
                       compat={compatByDir[s.dir] || null}
@@ -1470,7 +1475,7 @@ export default function SkillsApp({ appId, token }) {
     }
   }, [detailParsed, skillsMode])
   const registryMatch = current && registryItems
-    ? registryItems.find((item) => item.id === current.id) || null
+    ? catalogEntryForInstalled(registryItems, current)
     : null
 
   const syncPill = !online

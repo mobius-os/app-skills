@@ -303,8 +303,10 @@ function suffixOf(path) {
 }
 
 function isScriptResource(path) {
-  return String(path || '').startsWith('scripts/')
-    && (SCRIPT_SUFFIXES.includes(suffixOf(path)) || suffixOf(path) === '')
+  const value = String(path || '')
+  const suffix = suffixOf(value)
+  return SCRIPT_SUFFIXES.includes(suffix)
+    || (value.startsWith('scripts/') && suffix === '')
 }
 
 // EXACT mirror of the backend's per-file rule (_resource_rel_ok): 1..8 plain
