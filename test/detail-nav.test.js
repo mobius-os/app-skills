@@ -87,6 +87,31 @@ test('cross-link tap while detail is READY swaps content directly', async () => 
   assert.equal(opens, 1, 'no second sentinel installed for a cross-link swap')
 })
 
+test('sibling full-screen routes reuse one ready sentinel without pop then push', async () => {
+  const shown = []
+  const d = deferredHandle()
+  let opens = 0
+  let closes = 0
+  d.handle.close = () => { closes += 1 }
+  const nav = createDetailNav({
+    label: 'skills-surface',
+    getNavOpen: () => () => { opens += 1; return d.handle },
+    onShow: route => shown.push(route),
+    onClose: () => {},
+  })
+  const first = nav.open({ kind: 'skill', id: 'demo' })
+  d.resolve(true)
+  await first
+  await nav.open({ kind: 'catalog' })
+
+  assert.equal(opens, 1)
+  assert.equal(closes, 0)
+  assert.deepEqual(shown, [
+    { kind: 'skill', id: 'demo' },
+    { kind: 'catalog' },
+  ])
+})
+
 test('no shell nav available: opens directly', async () => {
   const shown = []
   const nav = createDetailNav({

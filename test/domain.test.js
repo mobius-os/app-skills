@@ -17,6 +17,9 @@ import {
   isUninstallable,
   catalogUpdateTarget,
   catalogEntryForInstalled,
+  catalogUpdateAvailability,
+  catalogUpdatePayload,
+  catalogInstallPayload,
   skillDisplayTitle,
   usageLabel,
 } from '../domain.js'
@@ -241,17 +244,18 @@ test('isUninstallable: only installed:* provenance may be removed in-app', () =>
   assert.equal(isUninstallable(undefined), false)
 })
 
-test('catalogUpdateTarget: managed skills match exact source coordinates before id', () => {
+test('catalogUpdateTarget: managed skills match repo and path before id', () => {
   const custom = {
     id: 'my-pdf-tools', provenance: 'installed:o/r', sourceRepo: 'o/r',
-    sourcePath: '/skills/pdf/', treeDigest: 'sha256-tree-v1:custom',
+    sourcePath: '/skills/pdf/', sourceRef: 'stable', treeDigest: 'sha256-tree-v1:custom',
   }
   const colliding = {
     id: 'pdf', provenance: 'installed:elsewhere/r', sourceRepo: 'elsewhere/r',
-    sourcePath: 'skills/pdf', treeDigest: 'sha256-tree-v1:collision',
+    sourcePath: 'skills/pdf', sourceRef: 'stable', treeDigest: 'sha256-tree-v1:collision',
   }
   const rows = new Map([[custom.id, custom], [colliding.id, colliding]])
-  assert.equal(catalogUpdateTarget(rows, { repo: 'o/r' }, 'skills/pdf', 'pdf'), custom)
+  assert.equal(catalogUpdateTarget(rows, { repo: 'o/r', ref: 'stable' }, 'skills/pdf', 'pdf'), custom)
+  assert.equal(catalogUpdateTarget(rows, { repo: 'o/r', ref: 'main' }, 'skills/pdf', 'pdf'), custom)
 })
 
 test('catalogUpdateTarget: basename fallback is only for explicit agent adoption', () => {
@@ -259,19 +263,20 @@ test('catalogUpdateTarget: basename fallback is only for explicit agent adoption
   assert.equal(catalogUpdateTarget([agent], { repo: 'o/r' }, 'skills/pdf', 'pdf'), agent)
   const otherManaged = {
     id: 'pdf', provenance: 'installed:other/r', sourceRepo: 'other/r',
-    sourcePath: 'skills/pdf', treeDigest: 'sha256-tree-v1:other',
+    sourcePath: 'skills/pdf', sourceRef: 'main', treeDigest: 'sha256-tree-v1:other',
   }
   assert.equal(catalogUpdateTarget([otherManaged], { repo: 'o/r' }, 'skills/pdf', 'pdf'), null)
 })
 
-test('catalogEntryForInstalled: custom managed names use provenance coordinates', () => {
-  const exact = { id: 'pdf', repo: 'o/r', path: 'skills/pdf' }
-  const idCollision = { id: 'my-pdf', repo: 'other/r', path: 'skills/my-pdf' }
+test('catalogEntryForInstalled: custom managed names use full source coordinates', () => {
+  const exact = { id: 'pdf', repo: 'o/r', path: 'skills/pdf', ref: 'stable' }
+  const idCollision = { id: 'my-pdf', repo: 'other/r', path: 'skills/my-pdf', ref: 'main' }
   const installed = {
     id: 'my-pdf', provenance: 'installed:o/r', sourceRepo: 'o/r',
-    sourcePath: '/skills/pdf/',
+    sourcePath: '/skills/pdf/', sourceRef: 'stable',
   }
   assert.equal(catalogEntryForInstalled([idCollision, exact], installed), exact)
+  assert.equal(catalogEntryForInstalled([{ ...exact, ref: 'main' }], installed), null)
   assert.equal(catalogEntryForInstalled([idCollision], installed), null)
 })
 
@@ -279,6 +284,75 @@ test('catalogEntryForInstalled: id fallback is reserved for agent adoption', () 
   const item = { id: 'pdf', repo: 'o/r', path: 'skills/pdf' }
   assert.equal(catalogEntryForInstalled([item], { id: 'pdf', provenance: 'agent' }), item)
   assert.equal(catalogEntryForInstalled([item], { id: 'pdf', provenance: 'seed' }), null)
+})
+
+test('catalogUpdateAvailability: platform capability gates managed updates but not agent adoption', () => {
+  const digest = `sha256-tree-v1:${'a'.repeat(64)}`
+  assert.deepEqual(
+    catalogUpdateAvailability({ provenance: 'installed:o/r', treeDigest: digest, updateSupported: true }),
+    { supported: true, reason: '' },
+  )
+  assert.match(
+    catalogUpdateAvailability({
+      provenance: 'installed:o/r', treeDigest: digest,
+      updateSupported: false, updateUnsupportedReason: 'unfinished_transition',
+    }).reason,
+    /unfinished/i,
+  )
+  assert.equal(
+    catalogUpdateAvailability({
+      provenance: 'agent', is_dir: true, treeDigest: digest,
+      updateSupported: false, updateUnsupportedReason: 'not_installer_managed',
+    }).supported,
+    true,
+  )
+  assert.match(
+    catalogUpdateAvailability({ provenance: 'agent', is_dir: false, treeDigest: digest }).reason,
+    /directory/i,
+  )
+  assert.match(
+    catalogUpdateAvailability({
+      provenance: 'installed:o/r', treeDigest: digest, sourceRef: 'stable',
+      updateSupported: true,
+    }, { ref: 'main' }).reason,
+    /different catalog ref/i,
+  )
+  assert.equal(catalogUpdateAvailability({ provenance: 'seed', treeDigest: null }).supported, false)
+})
+
+test('catalogUpdatePayload: update source is nested and pinned to the reviewed commit', () => {
+  const skill = {
+    treeDigest: `sha256-tree-v1:${'a'.repeat(64)}`,
+    provenance: 'agent',
+    is_dir: true,
+  }
+  assert.deepEqual(
+    catalogUpdatePayload(
+      skill,
+      { repo: 'o/r', ref: 'stable' },
+      'skills/demo',
+      'b'.repeat(40),
+    ),
+    {
+      expected_tree_digest: skill.treeDigest,
+      source: {
+        kind: 'github', repo: 'o/r', path: 'skills/demo', ref: 'stable',
+        commit: 'b'.repeat(40),
+      },
+      adopt: true,
+    },
+  )
+})
+
+test('catalogInstallPayload: v2 tracks the ref while older servers stay pinned', () => {
+  const source = { repo: 'o/r', ref: 'stable' }
+  const commit = 'b'.repeat(40)
+  assert.deepEqual(catalogInstallPayload(source, 'skills/demo', commit, 2), {
+    repo: 'o/r', path: 'skills/demo', ref: 'stable', expected_commit: commit,
+  })
+  assert.deepEqual(catalogInstallPayload(source, 'skills/demo', commit, 1), {
+    repo: 'o/r', path: 'skills/demo', ref: commit,
+  })
 })
 
 test('skillDisplayTitle: slugs become Title Case; real names pass through', () => {
@@ -318,18 +392,32 @@ test('classifyLink(dirSkill): relative refs are bundled resources, not skill slu
 
 // --- mapSkillRows: shape, sorting, and retained install identity ---
 
-test('mapSkillRows sorts by title and retains commit/source identity fields', () => {
+test('mapSkillRows sorts by title and retains source identity and update capability', () => {
   const rows = mapSkillRows({ skills: [
     { id: 'zeta', name: 'zeta', description: 'z', provenance: 'seed', is_dir: false, uses_30d: 2 },
     { id: 'pdf', name: 'pdf', description: 'p', provenance: 'installed:o/r', is_dir: true,
-      uses_30d: 0, commit: 'a'.repeat(40), source_repo: 'o/r', source_path: 'skills/pdf' },
+      uses_30d: 0, commit: 'a'.repeat(40), source_repo: 'o/r', source_path: 'skills/pdf',
+      source_ref: 'stable', update_supported: true },
     { id: '', name: 'dropped' },
   ] })
   assert.deepEqual(rows.map((r) => r.id), ['pdf', 'zeta'])
   assert.equal(rows[0].commit, 'a'.repeat(40))
   assert.equal(rows[0].sourceRepo, 'o/r')
   assert.equal(rows[0].sourcePath, 'skills/pdf')
+  assert.equal(rows[0].sourceRef, 'stable')
+  assert.equal(rows[0].updateSupported, true)
+  assert.equal(rows[0].updateUnsupportedReason, null)
   assert.equal(rows[1].commit, null)
+  assert.equal(rows[1].updateSupported, false)
+})
+
+test('mapSkillRows retains the platform update refusal reason', () => {
+  const [row] = mapSkillRows({ skills: [{
+    id: 'demo', update_supported: false,
+    update_unsupported_reason: 'unverified_identity',
+  }] })
+  assert.equal(row.updateSupported, false)
+  assert.equal(row.updateUnsupportedReason, 'unverified_identity')
 })
 
 test('mapSkillRows carries the authoritative installer files inventory (or null)', () => {
@@ -400,6 +488,17 @@ test('createSkillsLoader: a slow older response reports applied=false', async ()
   assert.equal(a.ok, true) // it succeeded — it is just superseded
 })
 
+test('createSkillsLoader: retains the negotiated install contract version', async () => {
+  const loader = createSkillsLoader({
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({ skills: [], install_contract: { version: 2 } }),
+    }),
+  })
+  const result = await loader.load({})
+  assert.equal(result.installContractVersion, 2)
+})
+
 test('createSkillsLoader: errors are also generation-gated and invalidate() supersedes', async () => {
   let reject
   const fetchImpl = () => new Promise((_, rej) => { reject = rej })
@@ -436,6 +535,7 @@ test('createSkillsLoader: a missing v2 route falls back to legacy browsing mode'
   assert.equal(result.ok, true)
   assert.equal(result.applied, true)
   assert.equal(result.mode, 'legacy')
+  assert.equal(result.installContractVersion, 0)
   assert.deepEqual(result.rows.map((row) => row.id), ['cron'])
   assert.equal(result.rows[0].description, 'Schedule recurring work.')
   assert.equal(result.rows[0].files, null)

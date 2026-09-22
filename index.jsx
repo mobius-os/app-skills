@@ -25,6 +25,9 @@ import {
   isUninstallable,
   catalogUpdateTarget,
   catalogEntryForInstalled,
+  catalogUpdateAvailability,
+  catalogUpdatePayload,
+  catalogInstallPayload,
   usageLabel,
 } from './domain.js'
 import {
@@ -510,7 +513,7 @@ export function CatalogCard({ skill, desc, installed, busy, anyBusy, compat, can
 // The catalog screen: curated sources → one git-trees scan each → flat cards.
 // Rendered as a hidden-not-unmounted overlay so scan results and scroll
 // survive closing and reopening it.
-function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onInstalled, onClose, target }) {
+function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, installContractVersion, onInstalled, onClose, target }) {
   const [sources, setSources] = useState(DEFAULT_SOURCES)
   const [open, setOpen] = useState(null) // { source } | null = source list
   const [skillList, setSkillList] = useState(null)
@@ -710,12 +713,9 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
       const res = await fetch('/api/skills/install', {
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repo: source.repo,
-          path: dir,
-          ref: source.ref || 'main',
-          expected_commit: open?.oid,
-        }),
+        body: JSON.stringify(catalogInstallPayload(
+          source, dir, open?.oid, installContractVersion,
+        )),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || `install failed (${res.status})`)
@@ -739,21 +739,14 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
   }
 
   const update = async (source, dir, existing) => {
-    if (!canInstall || !existing?.treeDigest) return
+    if (!canInstall || !catalogUpdateAvailability(existing, source).supported) return
     const opToken = open?.token
     setBusyDir(dir); setError(null); setNotice(null)
     try {
       const res = await fetch(`/api/skills/${encodeURIComponent(existing.id)}`, {
         method: 'PUT',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expected_tree_digest: existing.treeDigest,
-          repo: source.repo,
-          path: dir,
-          ref: source.ref || 'main',
-          expected_commit: open?.oid,
-          adopt: existing.provenance === 'agent',
-        }),
+        body: JSON.stringify(catalogUpdatePayload(existing, source, dir, open?.oid)),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || `update failed (${res.status})`)
@@ -800,7 +793,8 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
     : null
   const detailExisting = detailUpdateTarget || detailIdCollision
   const detailInstalled = detailExisting != null
-  const detailCanUpdate = !!(detailUpdateTarget?.treeDigest)
+  const detailUpdateAvailability = catalogUpdateAvailability(detailUpdateTarget, open?.source)
+  const detailCanUpdate = detailUpdateAvailability.supported
   const detailEntry = detailDir ? descs[detailDir] : null
   const detailLoaded = detailEntry && detailEntry !== 'loading' && detailEntry !== 'failed'
   const detailHtml = useMemo(() => {
@@ -906,7 +900,7 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
               title={
                 !canInstall ? 'Catalog installs need a newer Möbius version'
                   : detailInst.status === 'unsupported' ? detailInst.reason
-                  : detailInstalled && !detailCanUpdate ? 'This skill is managed by its app or the platform'
+                  : detailInstalled && !detailCanUpdate ? detailUpdateAvailability.reason
                     : detailInstalled ? 'Replace this skill with the reviewed catalog revision'
                     : detailInst.status === 'loading' || !detailLoaded ? 'Install unlocks once the skill has loaded'
                       : 'Install this skill for your agent'
@@ -916,7 +910,8 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, onIns
                 : detailInst.status === 'unsupported' ? 'Unsupported'
                   : busyDir === detailDir ? (detailInstalled ? 'Updating…' : 'Installing…')
                     : detailInstalled && detailCanUpdate ? 'Update'
-                      : detailInstalled ? 'Managed elsewhere'
+                      : detailUpdateTarget ? 'Update unavailable'
+                        : detailInstalled ? 'Managed elsewhere'
                         : 'Install'}
             </button>
             <a
@@ -1058,6 +1053,7 @@ export default function SkillsApp({ appId, token }) {
   const [skills, setSkills] = useState(null) // null = never loaded; [] or [..] = last-known-good
   const [systemPromptApps, setSystemPromptApps] = useState([])
   const [skillsMode, setSkillsMode] = useState('unknown') // full API or read-only legacy fallback
+  const [installContractVersion, setInstallContractVersion] = useState(0)
   const [loadError, setLoadError] = useState(null) // user-facing copy for the latest failed load
   const [refreshing, setRefreshing] = useState(false)
   const [query, setQuery] = useState('')
@@ -1078,32 +1074,30 @@ export default function SkillsApp({ appId, token }) {
   const [linkNotice, setLinkNotice] = useState(null) // tapped bundled-resource link
   const mainScrollRef = useRef(null)
   const mainListScrollRef = useRef(0) // list offset, restored when a detail closes
-  // The detail back-sentinel state machine (in domain.js so it is unit-testable
-  // — the double-tap-during-pending-push race can't be exercised through the
-  // React component alone). Created once; onShow/onClose close over the stable
-  // setState + signal, getNavOpen resolves the runtime handle at call time.
-  const detailNavRef = useRef(null)
-  if (!detailNavRef.current) {
-    detailNavRef.current = createDetailNav({
-      label: 'skill-detail',
+  // Detail and catalog are sibling routes inside one full-screen app surface,
+  // so one sentinel owns both. Swapping siblings changes only the visible
+  // route; it never races a physical Back pop against a second push.
+  const surfaceNavRef = useRef(null)
+  if (!surfaceNavRef.current) {
+    surfaceNavRef.current = createDetailNav({
+      label: 'skills-surface',
       getNavOpen: () => window.mobius?.nav?.open,
-      onShow: (id) => { setSelected(id); window.mobius?.signal?.('item_opened', { type: 'skill', slug: id }) },
-      onClose: () => setSelected(null),
+      onShow: (route) => {
+        if (route?.kind === 'catalog') {
+          setSelected(null)
+          setCatalogMounted(true)
+          setCatalogOpen(true)
+          window.mobius?.signal?.('item_opened', { type: 'catalog' })
+        } else {
+          setCatalogOpen(false)
+          setSelected(route?.id || null)
+          if (route?.id) window.mobius?.signal?.('item_opened', { type: 'skill', slug: route.id })
+        }
+      },
+      onClose: () => { setSelected(null); setCatalogOpen(false) },
     })
   }
-  const detailNav = detailNavRef.current
-  // Second sentinel for the catalog screen — one shell back target per pushed
-  // screen; navigation INSIDE the catalog (sources ↔ source) is in-screen.
-  const catalogNavRef = useRef(null)
-  if (!catalogNavRef.current) {
-    catalogNavRef.current = createDetailNav({
-      label: 'skills-catalog',
-      getNavOpen: () => window.mobius?.nav?.open,
-      onShow: () => { setCatalogMounted(true); setCatalogOpen(true); window.mobius?.signal?.('item_opened', { type: 'catalog' }) },
-      onClose: () => setCatalogOpen(false),
-    })
-  }
-  const catalogNav = catalogNavRef.current
+  const surfaceNav = surfaceNavRef.current
   const readySignalledRef = useRef(false) // gate app_ready to the first successful load
   const refreshCountRef = useRef(0) // in-flight refresh count, so the spinner ends on the LAST
   const catalogTargetKeyRef = useRef(0)
@@ -1154,6 +1148,7 @@ export default function SkillsApp({ appId, token }) {
     if (result.ok) {
       setSkills(result.rows)
       setSkillsMode(result.mode || 'full')
+      setInstallContractVersion(result.installContractVersion || 0)
       setLoadError(null)
       if (!readySignalledRef.current) {
         readySignalledRef.current = true
@@ -1247,10 +1242,10 @@ export default function SkillsApp({ appId, token }) {
 
   // Open (or cross-link-swap) a skill detail through the await-ready state
   // machine. All the sentinel lifecycle + race handling lives in detailNav.
-  const openSkill = (id) => detailNav.open(id)
-  const closeSkill = () => detailNav.close()
-  const openCatalog = () => catalogNav.open('catalog')
-  const closeCatalog = () => catalogNav.close()
+  const openSkill = (id) => surfaceNav.open({ kind: 'skill', id })
+  const closeSkill = () => surfaceNav.close()
+  const openCatalog = () => surfaceNav.open({ kind: 'catalog' })
+  const closeCatalog = () => surfaceNav.close()
   const openRegistrySkill = (skill) => {
     const source = {
       label: skill.sourceLabel || skill.repo,
@@ -1266,11 +1261,6 @@ export default function SkillsApp({ appId, token }) {
       source,
       dir: skill.path,
     })
-    // Detail and catalog are sibling full-screen surfaces, each with one host
-    // back sentinel. Retire the detail sentinel before asking the catalog to
-    // own the next one; stacking both leaves the second push rejected and the
-    // visible tap looking inert.
-    if (selected) closeSkill()
     openCatalog()
   }
 
@@ -1485,6 +1475,7 @@ export default function SkillsApp({ appId, token }) {
   const registryMatch = current && registryItems
     ? catalogEntryForInstalled(registryItems, current)
     : null
+  const currentUpdateAvailability = catalogUpdateAvailability(current)
 
   const syncPill = !online
     ? <div className="sk-sync-pill" role="status">Offline</div>
@@ -1550,8 +1541,8 @@ export default function SkillsApp({ appId, token }) {
                 ⚠ {compatInfo.caveats.length} {compatInfo.caveats.length === 1 ? 'thing' : 'things'} to know
               </button>
             ))}
-            {skillsMode === 'full' && registryMatch && current.treeDigest
-              && (removable || current.provenance === 'agent') && (
+            {skillsMode === 'full' && registryMatch
+              && currentUpdateAvailability.supported && (
               <button className="sk-btn ghost" onClick={() => openRegistrySkill(registryMatch)}>
                 Review update
               </button>
@@ -1764,6 +1755,7 @@ export default function SkillsApp({ appId, token }) {
           authHeaders={authHeaders}
           existingSkills={existingSkills}
           canInstall={skillsMode === 'full'}
+          installContractVersion={installContractVersion}
           onInstalled={acceptInstalledSkill}
           onClose={closeCatalog}
           target={catalogTarget}

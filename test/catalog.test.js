@@ -312,7 +312,7 @@ test('resourceRelOk matches the backend contract case for case', () => {
   assert.ok(!resourceRelOk(''))
 })
 
-test('assessCompat: depth-9 and dot-prefixed files are dropped exactly like the installer', () => {
+test('assessCompat: an unsupported resource path rejects the whole package', () => {
   const tree = [
     blob(`${DIR}/SKILL.md`),
     blob(`${DIR}/a/b/c/d/e/f/g/at-cap.md`), // 8 segments — installs
@@ -320,11 +320,12 @@ test('assessCompat: depth-9 and dot-prefixed files are dropped exactly like the 
     blob(`${DIR}/.github/ci.yml`),
   ]
   const res = assessCompat(tree, DIR, OK_MD)
-  const dropped = res.caveats.find((c) => c.kind === 'dropped')
-  assert.ok(dropped)
-  assert.match(dropped.text, /over\.md/)
-  assert.match(dropped.text, /ci\.yml/)
-  assert.ok(!dropped.text.includes('at-cap.md'))
+  const invalid = res.caveats.find((c) => c.kind === 'invalid-resource')
+  assert.ok(invalid)
+  assert.match(invalid.text, /over\.md/)
+  assert.match(invalid.text, /ci\.yml/)
+  assert.ok(!invalid.text.includes('at-cap.md'))
+  assert.equal(installability({ installable: true }, res).status, 'unsupported')
 })
 
 // --- install identity + source-override validation ---
@@ -669,7 +670,7 @@ test('generationGuard: stale markdown for a shared dir name is dropped', async (
 
 // --- assessCompat: the pre-install badge's prediction of the installer ---
 
-const blob = (path, size = 100) => ({ path, type: 'blob', size })
+const blob = (path, size = 100, mode = '100644') => ({ path, type: 'blob', size, mode })
 const DIR = 'skills/pdf'
 const OK_MD = '---\nname: pdf\ndescription: Fill and read PDFs.\n---\n\nProse body.\n'
 
@@ -704,7 +705,7 @@ test('installability: an over-cap SKILL.md is unsupported, not amber-but-runnabl
   assert.ok(inst.reason.length > 0)
 })
 
-test('installability: soft caveats (scripts, dropped, over-budget) stay installable', () => {
+test('installability: informational script caveats stay installable', () => {
   const tree = [blob(`${DIR}/SKILL.md`), blob(`${DIR}/scripts/run.py`)]
   const compat = assessCompat(tree, DIR, OK_MD)
   assert.equal(compat.ok, false) // has a 'scripts' caveat
@@ -727,9 +728,11 @@ test('installability: an invalid or colliding id is unsupported regardless of co
   assert.equal(badName.chip, 'Unsupported name')
 })
 
-test('BLOCKING_CAVEATS holds only the hard-reject kinds (skill-too-large)', () => {
-  assert.ok(BLOCKING_CAVEATS.has('skill-too-large'))
-  for (const soft of ['dropped', 'over-budget', 'scripts', 'frontmatter', 'broken-refs']) {
+test('BLOCKING_CAVEATS mirrors every whole-package backend rejection', () => {
+  for (const hard of ['skill-too-large', 'invalid-entry', 'invalid-resource', 'invalid-executable', 'over-budget']) {
+    assert.ok(BLOCKING_CAVEATS.has(hard), hard)
+  }
+  for (const soft of ['scripts', 'frontmatter', 'broken-refs']) {
     assert.equal(BLOCKING_CAVEATS.has(soft), false, soft)
   }
 })
@@ -747,41 +750,76 @@ test('installed-detail source link is built through the segment-encoding helper'
   assert.ok(!url.includes(' ') && !url.includes('#x'))
 })
 
-test('assessCompat: disallowed extensions and deep nesting are flagged as dropped', () => {
+test('assessCompat: disallowed extensions and deep nesting reject the package', () => {
   const tree = [
     blob(`${DIR}/SKILL.md`),
     blob(`${DIR}/binary.wasm`),
     blob(`${DIR}/a/b/c/d/e/f/g/h/deep.md`),
   ]
   const res = assessCompat(tree, DIR, OK_MD)
-  const dropped = res.caveats.find((c) => c.kind === 'dropped')
-  assert.ok(dropped)
-  assert.match(dropped.text, /2 extra files/)
-  assert.match(dropped.text, /binary\.wasm/)
+  const invalid = res.caveats.find((c) => c.kind === 'invalid-resource')
+  assert.ok(invalid)
+  assert.match(invalid.text, /2 package paths/)
+  assert.match(invalid.text, /binary\.wasm/)
+  assert.equal(installability({ installable: true }, res).status, 'unsupported')
 })
 
-test('assessCompat: over the file-count budget → installs partially', () => {
+test('assessCompat: non-files and invalid git modes reject the whole package', () => {
+  const tree = [
+    blob(`${DIR}/SKILL.md`),
+    { path: `${DIR}/nested`, type: 'tree', mode: '040000' },
+    { path: `${DIR}/vendor`, type: 'commit', mode: '160000', size: 0 },
+    blob(`${DIR}/ref.md`, 10, '100664'),
+  ]
+  const res = assessCompat(tree, DIR, OK_MD)
+  const invalid = res.caveats.find((c) => c.kind === 'invalid-entry')
+  assert.ok(invalid)
+  assert.match(invalid.text, /vendor/)
+  assert.match(invalid.text, /ref\.md/)
+  assert.ok(!invalid.text.includes('nested'), 'ordinary directory entries are structural, not package files')
+  assert.equal(installability({ installable: true }, res).status, 'unsupported')
+})
+
+test('assessCompat: executable mode is confined to scripts launchers', () => {
+  const rejected = assessCompat([
+    blob(`${DIR}/SKILL.md`),
+    blob(`${DIR}/reference.md`, 10, '100755'),
+  ], DIR, OK_MD)
+  assert.ok(rejected.caveats.find((c) => c.kind === 'invalid-executable'))
+  assert.equal(installability({ installable: true }, rejected).status, 'unsupported')
+
+  const accepted = assessCompat([
+    blob(`${DIR}/SKILL.md`),
+    blob(`${DIR}/scripts/run.py`, 10, '100755'),
+  ], DIR, OK_MD)
+  assert.equal(accepted.caveats.some((c) => c.kind === 'invalid-executable'), false)
+  assert.ok(accepted.caveats.find((c) => c.kind === 'scripts'))
+})
+
+test('assessCompat: over the file-count budget rejects the whole package', () => {
   const tree = [blob(`${DIR}/SKILL.md`)]
   for (let i = 0; i < 257; i++) tree.push(blob(`${DIR}/ref-${i}.md`))
   const res = assessCompat(tree, DIR, OK_MD)
   const over = res.caveats.find((c) => c.kind === 'over-budget')
   assert.ok(over)
   assert.match(over.text, /257 files \(max 256\)/)
+  assert.equal(installability({ installable: true }, res).status, 'unsupported')
 })
 
-test('assessCompat: over the total-size budget → installs partially', () => {
+test('assessCompat: over the total-size budget rejects the whole package', () => {
   const tree = [blob(`${DIR}/SKILL.md`), blob(`${DIR}/big.csv`, 9 * 1024 * 1024)]
   const res = assessCompat(tree, DIR, OK_MD)
   const over = res.caveats.find((c) => c.kind === 'over-budget')
   assert.ok(over)
   assert.match(over.text, /max 8 MB/)
+  assert.equal(installability({ installable: true }, res).status, 'unsupported')
 })
 
 test('assessCompat: command-routed toolkit packages fit whole', () => {
   const tree = [blob(`${DIR}/SKILL.md`)]
   for (let i = 0; i < 145; i++) tree.push(blob(`${DIR}/scripts/group-${i % 5}/helper-${i}.mjs`, 22 * 1024))
   const res = assessCompat(tree, DIR, OK_MD)
-  assert.equal(res.caveats.some((c) => c.kind === 'dropped'), false)
+  assert.equal(res.caveats.some((c) => c.kind === 'invalid-resource'), false)
   assert.equal(res.caveats.some((c) => c.kind === 'over-budget'), false)
   assert.ok(res.caveats.some((c) => c.kind === 'scripts'))
 })
@@ -797,9 +835,9 @@ test('assessCompat: bundled scripts are an informational caveat', () => {
 test('assessCompat: script suffixes warn outside the scripts directory too', () => {
   const raw = '# Tool\n\nUse the helpers.\n'
   const tree = [
-    { type: 'blob', path: 'tool/SKILL.md', size: raw.length },
-    { type: 'blob', path: 'tool/tool.py', size: 4 },
-    { type: 'blob', path: 'tool/helpers/run.sh', size: 4 },
+    { type: 'blob', mode: '100644', path: 'tool/SKILL.md', size: raw.length },
+    { type: 'blob', mode: '100644', path: 'tool/tool.py', size: 4 },
+    { type: 'blob', mode: '100644', path: 'tool/helpers/run.sh', size: 4 },
   ]
   const scripts = assessCompat(tree, 'tool', raw).caveats.find((c) => c.kind === 'scripts')
   assert.match(scripts.text, /2 helper scripts/)
@@ -818,7 +856,7 @@ test('assessCompat: multi-line YAML description defeats the flat parser → flag
   assert.ok(res.caveats.find((c) => c.kind === 'frontmatter'))
 })
 
-test('assessCompat: refs to dropped or absent files are the broken-refs caveat', () => {
+test('assessCompat: refs to rejected or absent files are the broken-refs caveat', () => {
   const tree = [blob(`${DIR}/SKILL.md`), blob(`${DIR}/helper.rb`)]
   const raw = `${OK_MD}\nRun [the helper](helper.rb), read \`scripts/gone.py\`, see [docs](https://example.com/x.md).\n`
   const res = assessCompat(tree, DIR, raw)

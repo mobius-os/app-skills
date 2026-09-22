@@ -147,8 +147,8 @@ export function createSystemPromptAppsLoader({ fetchImpl, onApps }) {
 }
 
 // One /api/skills payload → sorted list rows. Pure so the loader tests can
-// exercise it without React. Retains the immutable install identity fields
-// (commit + source coordinates) the platform reports for installed skills.
+// exercise it without React. Retains the immutable install identity and the
+// platform-owned update capability reported for each installed skill.
 export function mapSkillRows(data) {
   return (Array.isArray(data?.skills) ? data.skills : [])
     .map((s) => {
@@ -165,8 +165,13 @@ export function mapSkillRows(data) {
         commit: typeof s?.commit === 'string' ? s.commit : null,
         sourceRepo: typeof s?.source_repo === 'string' ? s.source_repo : null,
         sourcePath: typeof s?.source_path === 'string' ? s.source_path : null,
+        sourceRef: typeof s?.source_ref === 'string' ? s.source_ref : null,
         sourceUrl: typeof s?.source_url === 'string' ? s.source_url : null,
         treeDigest: typeof s?.tree_digest === 'string' ? s.tree_digest : null,
+        updateSupported: s?.update_supported === true,
+        updateUnsupportedReason: typeof s?.update_unsupported_reason === 'string'
+          ? s.update_unsupported_reason
+          : null,
         // The installer-owned bounded file inventory (relative paths incl.
         // SKILL.md), authoritative and complete when present — preferred over
         // the shared-list walk, which can silently omit names. null for skills
@@ -205,12 +210,16 @@ export function createSkillsLoader({ fetchImpl }) {
     try {
       const res = await fetchImpl('/api/skills', { headers })
       if (res?.ok) {
-        const rows = mapSkillRows(await res.json())
+        const data = await res.json()
+        const rows = mapSkillRows(data)
         return {
           applied: requestGeneration === generation,
           ok: true,
           rows,
           mode: 'full',
+          installContractVersion: Number.isInteger(data?.install_contract?.version)
+            ? data.install_contract.version
+            : 0,
         }
       }
       // App updates can reach an older Möbius instance before the matching
@@ -223,6 +232,7 @@ export function createSkillsLoader({ fetchImpl }) {
           ok: true,
           rows,
           mode: 'legacy',
+          installContractVersion: 0,
         }
       }
       throw new Error(`list ${res?.status}`)
@@ -315,7 +325,10 @@ export async function loadLegacySkills(fetchImpl, headers) {
       commit: null,
       sourceRepo: null,
       sourcePath: null,
+      sourceRef: null,
       sourceUrl: null,
+      updateSupported: false,
+      updateUnsupportedReason: null,
       files: null,
       unavailable,
     }
@@ -368,11 +381,12 @@ export function isUninstallable(provenance) {
 }
 
 // Resolve the existing skill a catalog entry may update. Installer-managed
-// skills are identified by their authoritative source coordinates, not by the
-// catalog basename: owners may have installed the same source under a custom
-// local name. Basename fallback is deliberately limited to agent-owned skills,
-// where it represents the explicit adoption flow. A managed skill with the
-// same basename but a different source is a collision, never an update target.
+// skills are located by repo/path, not by the catalog basename: owners may have
+// installed the same source under a custom local name. Update availability then
+// verifies its tracking ref and server capability. Basename fallback is limited
+// to agent-owned skills, where it represents the explicit adoption flow. A
+// managed skill with the same basename but a different source is only a
+// collision, never an update target.
 export function catalogUpdateTarget(skills, source, path, installId) {
   const rows = skills instanceof Map
     ? [...skills.values()]
@@ -399,12 +413,80 @@ export function catalogEntryForInstalled(items, skill) {
     return entries.find((item) => (
       item?.repo === skill?.sourceRepo
       && String(item?.path || '').replace(/^\/+|\/+$/g, '') === path
+      && (item?.ref || 'main') === skill?.sourceRef
     )) || null
   }
   if (skill?.provenance === 'agent') {
     return entries.find((item) => item?.id === skill?.id) || null
   }
   return null
+}
+
+const UPDATE_UNAVAILABLE_COPY = {
+  directory_required: 'Only directory skills can be updated.',
+  unfinished_transition: 'This skill has an unfinished install or update to repair first.',
+  unverified_identity: 'This skill needs a verified installed-file identity before it can be updated.',
+  source_not_updateable: 'This skill’s source cannot be safely updated here.',
+  not_installer_managed: 'This skill is managed by its app or the platform.',
+}
+
+// Installer-managed skills follow the platform's explicit capability. Agent
+// skills keep the separate, deliberate catalog-adoption path: the update route
+// requires `adopt` and never treats app/seed ownership as replaceable.
+export function catalogUpdateAvailability(skill, source = null) {
+  if (!skill?.treeDigest) {
+    return { supported: false, reason: 'This skill has no current file identity to compare.' }
+  }
+  if (skill.provenance === 'agent') {
+    return skill.is_dir === true
+      ? { supported: true, reason: '' }
+      : { supported: false, reason: UPDATE_UNAVAILABLE_COPY.directory_required }
+  }
+  if (
+    isUninstallable(skill.provenance)
+    && source
+    && skill.sourceRef !== (source.ref || 'main')
+  ) {
+    return { supported: false, reason: 'This skill tracks a different catalog ref.' }
+  }
+  if (skill.updateSupported === true) return { supported: true, reason: '' }
+  return {
+    supported: false,
+    reason: UPDATE_UNAVAILABLE_COPY[skill.updateUnsupportedReason]
+      || 'This skill cannot be safely updated here.',
+  }
+}
+
+// The update route accepts one closed source union. Keeping its wire shape at
+// this boundary prevents UI callers from rebuilding a permissive flat payload.
+export function catalogUpdatePayload(skill, source, path, commit) {
+  return {
+    expected_tree_digest: skill.treeDigest,
+    source: {
+      kind: 'github',
+      repo: source.repo,
+      path,
+      ref: source.ref || 'main',
+      commit,
+    },
+    adopt: skill.provenance === 'agent',
+  }
+}
+
+// Contract v2 persists the mutable tracking ref while atomically verifying the
+// reviewed commit. Older platforms ignore unknown request fields, so pin `ref`
+// itself to the reviewed OID there rather than silently installing a moved
+// branch. Those older platforms have no managed-update contract to preserve.
+export function catalogInstallPayload(source, path, commit, contractVersion) {
+  if (contractVersion >= 2) {
+    return {
+      repo: source.repo,
+      path,
+      ref: source.ref || 'main',
+      expected_commit: commit,
+    }
+  }
+  return { repo: source.repo, path, ref: commit }
 }
 
 // API skill names are usually slugs; render a readable title without mangling
