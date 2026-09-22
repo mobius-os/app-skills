@@ -60,6 +60,7 @@ test('parseSkill: strips frontmatter from rendered content', () => {
     '---',
     'name: impeccable',
     'description: Improve frontend interfaces.',
+    'version: 4.3.1',
     '---',
     '# impeccable',
     '',
@@ -68,6 +69,7 @@ test('parseSkill: strips frontmatter from rendered content', () => {
   const s = parseSkill('impeccable.md', md)
   assert.equal(s.title, 'impeccable')
   assert.equal(s.description, 'Use this skill for product UI polish.')
+  assert.equal(s.version, '4.3.1')
   assert.equal(s.content, '# impeccable\n\nUse this skill for product UI polish.')
 })
 
@@ -298,6 +300,13 @@ test('mapSkillRows carries the authoritative installer files inventory (or null)
   // A malformed (non-array) files field degrades to null, never a bad verdict.
   const [bad] = mapSkillRows({ skills: [{ id: 'c', name: 'c', files: 'oops' }] })
   assert.equal(bad.files, null)
+})
+
+test('mapSkillRows retains the tree digest used for update compare-and-swap', () => {
+  const [row] = mapSkillRows({ skills: [{
+    id: 'demo', name: 'demo', tree_digest: 'sha256-tree-v1:abc',
+  }] })
+  assert.equal(row.treeDigest, 'sha256-tree-v1:abc')
 })
 
 test('mergeConfirmedSkill makes a successful install authoritative before refresh', () => {

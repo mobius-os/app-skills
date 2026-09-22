@@ -296,6 +296,9 @@ test('resourceRelOk matches the backend contract case for case', () => {
   assert.ok(resourceRelOk('scripts/run.py'))
   assert.ok(resourceRelOk('scripts/context.mjs'))
   assert.ok(resourceRelOk('scripts/ui/card.tsx'))
+  assert.ok(resourceRelOk('scripts/impeccable'))
+  assert.ok(resourceRelOk('scripts/VERSION'))
+  assert.ok(resourceRelOk('scripts/impeccable.cmd'))
   assert.ok(resourceRelOk('a/b/c/d/e/f/g/deep.md')) // 8 segments = at the cap
   assert.ok(!resourceRelOk('a/b/c/d/e/f/g/h/deep.md')) // 9 segments — backend drops it
   assert.ok(!resourceRelOk('../up.md'))
@@ -304,6 +307,8 @@ test('resourceRelOk matches the backend contract case for case', () => {
   assert.ok(!resourceRelOk('dir//double.md'))
   assert.ok(!resourceRelOk('win\\path.md'))
   assert.ok(!resourceRelOk('binary.png'))
+  assert.ok(!resourceRelOk('VERSION'))
+  assert.ok(!resourceRelOk('reference/README'))
   assert.ok(!resourceRelOk(''))
 })
 

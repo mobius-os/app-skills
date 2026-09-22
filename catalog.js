@@ -291,10 +291,10 @@ export const INSTALL_LIMITS = {
   // _RESOURCE_MAX_DEPTH semantics (`a/b/c/d/e/f/g/file.md` = 8 segments).
   maxDepth: 8,
   suffixes: ['.md', '.txt', '.json', '.yaml', '.yml', '.csv', '.py', '.js', '.mjs',
-    '.cjs', '.ts', '.tsx', '.jsx', '.sh', '.toml', '.html', '.css'],
+    '.cjs', '.ts', '.tsx', '.jsx', '.sh', '.cmd', '.toml', '.html', '.css'],
 }
 
-const SCRIPT_SUFFIXES = ['.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.sh']
+const SCRIPT_SUFFIXES = ['.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.sh', '.cmd']
 
 function suffixOf(path) {
   const base = path.split('/').pop() || ''
@@ -302,17 +302,26 @@ function suffixOf(path) {
   return dot > 0 ? base.slice(dot).toLowerCase() : ''
 }
 
-// EXACT mirror of the backend's per-file rule (_resource_rel_ok): 1..4 plain
+function isScriptResource(path) {
+  return String(path || '').startsWith('scripts/')
+    && (SCRIPT_SUFFIXES.includes(suffixOf(path)) || suffixOf(path) === '')
+}
+
+// EXACT mirror of the backend's per-file rule (_resource_rel_ok): 1..8 plain
 // segments — none empty, dot-prefixed, or containing a backslash — plus the
-// suffix allowlist. The badge must never say "works" for a file the real
-// installer will drop.
+// suffix allowlist or a confined extensionless scripts/<name> launcher.
 export function resourceRelOk(rel) {
   const segments = String(rel || '').split('/')
   if (segments.length < 1 || segments.length > INSTALL_LIMITS.maxDepth) return false
   for (const seg of segments) {
     if (!seg || seg.startsWith('.') || seg.includes('\\')) return false
   }
-  return INSTALL_LIMITS.suffixes.includes(suffixOf(rel))
+  if (INSTALL_LIMITS.suffixes.includes(suffixOf(rel))) return true
+  const leaf = segments[segments.length - 1]
+  return segments.length >= 2
+    && segments[0] === 'scripts'
+    && !leaf.includes('.')
+    && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(leaf)
 }
 
 // The backend skill-name contract (routes/skills._SKILL_NAME_OK): lowercase,
@@ -422,7 +431,7 @@ export function assessCompat(tree, dir, raw) {
     })
   }
 
-  const scripts = kept.filter((f) => SCRIPT_SUFFIXES.includes(suffixOf(f.rel)))
+  const scripts = kept.filter((f) => isScriptResource(f.rel))
   if (scripts.length) {
     caveats.push({
       kind: 'scripts',
@@ -497,7 +506,7 @@ export function assessInstalled(files, raw) {
     })
   }
 
-  const scripts = rels.filter((r) => SCRIPT_SUFFIXES.includes(suffixOf(r)))
+  const scripts = rels.filter((r) => isScriptResource(r))
   if (scripts.length) {
     caveats.push({
       kind: 'scripts',
