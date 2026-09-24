@@ -5,7 +5,9 @@ import {
   ArrowLeft,
   ArrowRotateCw,
   BookOpen,
+  Check,
   ChevronRight,
+  Copy,
   ExternalLink,
   Search,
   ToolsSkills,
@@ -77,10 +79,10 @@ const CSS = `
 
 /* mobius-ui:Page — app-owned; a future-library candidate (no sync owed).
    Reading column: the scroll owns the full-bleed scrollbar; this caps the CONTENT.
-   Full-bleed on phones, centered at 720px (matches the .sk-md detail cap) on wide
+   Full-bleed on phones, centered at 760px (matches the header cap) on wide
    viewports so list and detail agree. */
 .sk-page { width: 100%; }
-@media (min-width: 760px) { .sk-page { max-width: 720px; margin-inline: auto; } }
+@media (min-width: 760px) { .sk-page { max-width: 760px; margin-inline: auto; } }
 /* /mobius-ui:Page */
 
 /* mobius-ui:Scrollskin v2 — keep in sync; hidden by default, content stays scrollable. */
@@ -186,7 +188,7 @@ const CSS = `
 .sk-srclink { font-size: 11px; font-weight: 600; color: var(--accent); text-decoration: none;
   white-space: nowrap; }
 .sk-detailmeta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
-  max-width: 720px; margin: 0 auto; padding: 14px 18px 0; }
+  max-width: 760px; margin: 0 auto; padding: 14px 18px 0; }
 
 /* installed apps that contribute read-only, always-on prompt context */
 .sk-system-apps { margin: 0 20px; padding: 24px 0 max(32px, env(safe-area-inset-bottom));
@@ -230,20 +232,25 @@ const CSS = `
 /* /mobius-ui:SyncPill */
 
 /* detail */
-.sk-detail-head { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px;
-  flex-wrap: wrap; padding: max(12px, env(safe-area-inset-top)) 12px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+/* mobius-ui:IntegrationsHeader pattern — bg bar, 760 column, inner hairline. */
+.sk-detail-head { position: sticky; top: 0; z-index: 5; background: var(--bg); }
+.sk-detail-head-inner { position: relative; width: 100%; max-width: 760px; margin-inline: auto; display: flex;
+  align-items: center; gap: 10px; flex-wrap: wrap; padding: max(12px, env(safe-area-inset-top)) 16px 12px; }
+.sk-detail-head-inner::after { content: ''; position: absolute; inset-inline: 16px; bottom: 0; height: 1px;
+  background: var(--border); }
 /* The action cluster (compat chip + Install + GitHub) stays together and drops
    to its own row on a narrow viewport instead of overflowing horizontally
    (measured clip at 320px). min-width lets the breadcrumb keep a usable width
    rather than collapsing to zero as the actions squeeze it. */
 .sk-detail-actions { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sk-back { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 8px 12px 8px 8px;
-  border-radius: 10px; border: none; background: none; color: var(--accent); font-family: var(--font);
-  font-size: 15px; font-weight: 500; cursor: pointer; }
-.sk-back svg { width: 20px; height: 20px; }
-.sk-detail-title { font-size: 16px; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; flex: 1; }
-.sk-md { padding: 18px 18px 48px; font-size: 15px; line-height: 1.65; max-width: 720px; margin: 0 auto; }
+.sk-back { flex: 0 0 auto; min-width: 40px; min-height: 40px; display: inline-flex; align-items: center;
+  justify-content: center; border: 0; border-radius: 10px; background: transparent; color: var(--muted);
+  font-family: var(--font); cursor: pointer; transition: background .15s, color .15s; }
+.sk-back:hover { color: var(--text); background: var(--surface2, var(--bg)); }
+.sk-back svg { width: 18px; height: 18px; }
+.sk-detail-title { font-size: 18px; font-weight: 700; letter-spacing: -0.015em; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.sk-md { padding: 18px 18px 48px; font-size: 15px; line-height: 1.65; max-width: 760px; margin: 0 auto; }
 .sk-md h1 { font-size: 22px; font-weight: 750; letter-spacing: 0; margin: 4px 0 12px; }
 .sk-md h2 { font-size: 18px; font-weight: 700; margin: 26px 0 10px; padding-top: 6px; border-top: 1px solid var(--border-light, var(--border)); }
 .sk-md h3 { font-size: 15.5px; font-weight: 700; margin: 20px 0 8px; }
@@ -263,11 +270,24 @@ const CSS = `
 .sk-md th { background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 650; }
 .sk-md hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 .sk-md img { max-width: 100%; }
+/* The shell app-frame locks body selection for native-app chrome feel.
+   Skills content is meant to be read AND copied, so re-enable selection
+   app-wide, then re-lock controls so taps never select button labels. */
+.sk-root { -webkit-user-select: text; user-select: text; }
+.sk-root button { -webkit-user-select: none; user-select: none; }
+.sk-copybtn { flex: 0 0 auto; width: 36px; height: 36px; display: inline-flex; align-items: center;
+  justify-content: center; border: none; border-radius: 8px; background: none; color: var(--muted);
+  cursor: pointer; transition: background .14s ease, color .14s ease; }
+.sk-copybtn:hover { background: var(--surface2, var(--surface)); color: var(--text); }
+.sk-copybtn:disabled { opacity: 0.45; cursor: default; }
+.sk-copybtn.is-done { color: var(--green, #059669); }
+.sk-copybtn svg { width: 16px; height: 16px; }
 .sk-plain { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font); }
 
 /* alerts (catalog + detail actions) */
 .sk-alert { flex: 0 0 auto; margin: 10px 16px 0; padding: 9px 12px; border-radius: 10px; font-size: 13px;
   line-height: 1.45; border: 1px solid var(--border); color: var(--muted); background: var(--surface); }
+@media (min-width: 760px) { .sk-alert { max-width: 760px; margin-inline: auto; } }
 .sk-alert.is-error { border-color: var(--danger); color: var(--danger); white-space: pre-wrap; }
 
 /* catalog screen (overlay over the list, so list state/scroll survive) */
@@ -852,8 +872,9 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, insta
   return (
     <div className="sk-cat" style={visible ? undefined : { display: 'none' }} aria-hidden={!visible}>
       <div className="sk-detail-head">
+        <div className="sk-detail-head-inner">
         <button ref={backRef} className="sk-back" onClick={onClose} aria-label="Back to skills">
-          {BACK}<span>Skills</span>
+          {BACK}
         </button>
         {/* Full breadcrumb chain — tap any ancestor to jump straight back to it. */}
         <nav className="sk-crumbs" aria-label="Catalog navigation">
@@ -924,6 +945,7 @@ function CatalogScreen({ visible, authHeaders, existingSkills, canInstall, insta
             >{EXTERNAL}</a>
           </div>
         )}
+        </div>
       </div>
       {error && <div className="sk-alert is-error" role="alert">{error}</div>}
       {notice && !error && <div className="sk-alert" role="status">{notice}</div>}
@@ -1064,6 +1086,8 @@ export default function SkillsApp({ appId, token }) {
   const [contents, setContents] = useState({}) // id -> { status, text } (lazy detail fetch)
   const [removeArmed, setRemoveArmed] = useState(false)
   const [removeBusy, setRemoveBusy] = useState(false)
+  const [copyState, setCopyState] = useState('') // '' | 'ok' | 'fail'
+  const copyTimerRef = useRef(null)
   const [removeError, setRemoveError] = useState(null)
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogMounted, setCatalogMounted] = useState(false)
@@ -1477,6 +1501,30 @@ export default function SkillsApp({ appId, token }) {
     : null
   const currentUpdateAvailability = catalogUpdateAvailability(current)
 
+  // Copy the full raw SKILL.md body. navigator.clipboard can be withheld in
+  // the sandboxed app frame; fall back to a selection + execCommand copy, and
+  // never fail silently.
+  const copyCurrentSkill = async () => {
+    const text = detailParsed?.content || currentContent?.text || ''
+    let ok = false
+    try {
+      await navigator.clipboard.writeText(text)
+      ok = true
+    } catch { /* fall through */ }
+    if (!ok) {
+      const ta = document.createElement('textarea')
+      ta.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0'
+      ta.value = text
+      document.body.appendChild(ta)
+      ta.focus(); ta.select()
+      try { ok = document.execCommand('copy') } catch { ok = false }
+      ta.remove()
+    }
+    setCopyState(ok ? 'ok' : 'fail')
+    clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => setCopyState(''), 1800)
+  }
+
   const syncPill = !online
     ? <div className="sk-sync-pill" role="status">Offline</div>
     : (loadError && skills)
@@ -1492,16 +1540,29 @@ export default function SkillsApp({ appId, token }) {
         <style>{CSS}</style>
         {syncPill}
         <div className="sk-detail-head">
-          <button className="sk-back" onClick={closeSkill} aria-label="Back to skills">{BACK}<span>Skills</span></button>
-          <div className="sk-detail-title">{detailParsed?.title || current.title}</div>
-          {removable && (
+          <div className="sk-detail-head-inner">
+            <button className="sk-back" onClick={closeSkill} aria-label="Back to skills">{BACK}</button>
+            <div className="sk-detail-title">{detailParsed?.title || current.title}</div>
             <button
-              className={`sk-iconbtn${removeArmed ? ' is-armed' : ''}`}
-              disabled={removeBusy}
-              onClick={() => (removeArmed ? uninstallCurrent() : setRemoveArmed(true))}
-              aria-label={removeArmed ? 'Tap again to remove this skill' : 'Remove this skill'}
-            >{TRASH}<span className="sk-tip" aria-hidden="true">Delete – removes the skill (asks once more before deleting)</span></button>
-          )}
+              className={`sk-copybtn${copyState === 'ok' ? ' is-done' : ''}`}
+              onClick={copyCurrentSkill}
+              disabled={!detailParsed}
+              aria-label={copyState === 'ok' ? 'Copied' : copyState === 'fail' ? 'Copy failed' : 'Copy skill content'}
+              title="Copy skill content"
+            >
+              {copyState === 'ok'
+                ? <Check width={15} height={15} aria-hidden="true" />
+                : <Copy width={15} height={15} aria-hidden="true" />}
+            </button>
+            {removable && (
+              <button
+                className={`sk-iconbtn${removeArmed ? ' is-armed' : ''}`}
+                disabled={removeBusy}
+                onClick={() => (removeArmed ? uninstallCurrent() : setRemoveArmed(true))}
+                aria-label={removeArmed ? 'Tap again to remove this skill' : 'Remove this skill'}
+              >{TRASH}<span className="sk-tip" aria-hidden="true">Delete – removes the skill (asks once more before deleting)</span></button>
+            )}
+          </div>
         </div>
         {removeArmed && !removeError && (
           <div className="sk-alert" role="status">Tap the bin again to remove “{current.id}”. Its bytes are saved to git history first.</div>
