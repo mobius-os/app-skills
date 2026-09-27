@@ -246,7 +246,7 @@ const CSS = `
 .sk-back { flex: 0 0 auto; min-width: 40px; min-height: 40px; display: inline-flex; align-items: center;
   justify-content: center; border: 0; border-radius: 10px; background: transparent; color: var(--muted);
   font-family: var(--font); cursor: pointer; transition: background .15s, color .15s; }
-.sk-back:hover { color: var(--text); background: var(--surface2, var(--bg)); }
+.sk-back:hover { color: var(--text); background: var(--surface-2, var(--bg)); }
 .sk-back svg { width: 18px; height: 18px; }
 .sk-detail-title { font-size: 18px; font-weight: 700; letter-spacing: -0.015em; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; flex: 1; }
@@ -260,7 +260,7 @@ const CSS = `
 .sk-md a { color: var(--accent); text-decoration: none; }
 .sk-md code { font-family: var(--mono); font-size: 0.86em; background: color-mix(in srgb, var(--text) 8%, transparent);
   padding: 1px 5px; border-radius: 5px; word-break: break-word; }
-.sk-md pre { background: var(--surface2, var(--surface)); border: 1px solid var(--border); border-radius: 10px;
+.sk-md pre { background: var(--surface-2, var(--surface)); border: 1px solid var(--border); border-radius: 10px;
   padding: 12px 14px; overflow-x: auto; margin: 0 0 14px; }
 .sk-md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.55; }
 .sk-md blockquote { margin: 0 0 12px; padding: 10px 14px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
@@ -278,7 +278,7 @@ const CSS = `
 .sk-copybtn { flex: 0 0 auto; width: 36px; height: 36px; display: inline-flex; align-items: center;
   justify-content: center; border: none; border-radius: 8px; background: none; color: var(--muted);
   cursor: pointer; transition: background .14s ease, color .14s ease; }
-.sk-copybtn:hover { background: var(--surface2, var(--surface)); color: var(--text); }
+.sk-copybtn:hover { background: var(--surface-2, var(--surface)); color: var(--text); }
 .sk-copybtn:disabled { opacity: 0.45; cursor: default; }
 .sk-copybtn.is-done { color: var(--green, #059669); }
 .sk-copybtn svg { width: 16px; height: 16px; }
