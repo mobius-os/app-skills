@@ -124,17 +124,17 @@ test('friendlyLoadError: network failures become actionable copy', () => {
   assert.match(friendlyLoadError(new Error('list 500')), /error/i)
 })
 
-test('selectSystemPromptApps: keeps only true system apps with a prompt file and sorts by name', () => {
+test('selectSystemPromptApps: includes any app with a prompt file and sorts by name', () => {
   const apps = [
-    { id: 4, name: 'Memory', system_app: true, system_prompt_file: 'memory-core.md' },
-    { id: 2, name: 'Artifacts', system_app: true, system_prompt_file: 'artifacts-core.md' },
+    { id: 4, name: 'Memory', system_prompt_file: 'memory-core.md' },
+    { id: 2, name: 'Artifacts', system_prompt_file: 'artifacts-core.md' },
     { id: 1, name: 'Skills', system_app: false, system_prompt_file: 'skills-core.md' },
-    { id: 3, name: 'Legacy', system_app: true, system_prompt_file: null },
-    { id: 6, name: 'Blank', system_app: true, system_prompt_file: '' },
-    { id: 5, name: 'Truthy only', system_app: 1, system_prompt_file: 'truthy-core.md' },
+    { id: 3, name: 'Legacy', system_prompt_file: null },
+    { id: 6, name: 'Blank', system_prompt_file: '' },
+    { id: 5, name: 'Not a name', system_prompt_file: 1 },
   ]
 
-  assert.deepEqual(selectSystemPromptApps(apps).map((app) => app.name), ['Artifacts', 'Memory'])
+  assert.deepEqual(selectSystemPromptApps(apps).map((app) => app.name), ['Artifacts', 'Memory', 'Skills'])
 })
 
 test('selectSystemPromptApps: malformed API payloads are safely empty', () => {

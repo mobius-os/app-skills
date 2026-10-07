@@ -108,7 +108,7 @@ export function classifyLink(href, { dirSkill = false } = {}) {
 export function selectSystemPromptApps(apps) {
   if (!Array.isArray(apps)) return []
   return apps
-    .filter((app) => app?.system_app === true && Boolean(app.system_prompt_file))
+    .filter((app) => typeof app?.system_prompt_file === 'string' && Boolean(app.system_prompt_file))
     .sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()))
 }
 
