@@ -182,7 +182,7 @@ const CSS = `
   border: 1px solid var(--border); color: var(--muted); max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-prov.seed { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
-.sk-prov.installed { color: var(--success, #2e9e5b); border-color: color-mix(in srgb, var(--success, #2e9e5b) 55%, transparent); }
+.sk-prov.installed { color: var(--green-text, var(--green)); border-color: color-mix(in srgb, var(--green) 55%, transparent); }
 .sk-prov.available { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .sk-uses { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .sk-srclink { font-size: 11px; font-weight: 600; color: var(--accent); text-decoration: none;
@@ -280,7 +280,7 @@ const CSS = `
   cursor: pointer; transition: background .14s ease, color .14s ease; }
 .sk-copybtn:hover { background: var(--surface-2, var(--surface)); color: var(--text); }
 .sk-copybtn:disabled { opacity: 0.45; cursor: default; }
-.sk-copybtn.is-done { color: var(--green, #059669); }
+.sk-copybtn.is-done { color: var(--green-text, var(--green)); }
 .sk-copybtn svg { width: 16px; height: 16px; }
 .sk-plain { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font); }
 
@@ -300,15 +300,15 @@ const CSS = `
 .sk-compat { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; padding: 4px 11px;
   border-radius: 999px; font-family: var(--font); font-size: 12.5px; font-weight: 600; border: 1px solid;
   background: none; white-space: nowrap; }
-.sk-compat.is-ok { color: var(--ok, #2e7d32); border-color: color-mix(in srgb, var(--ok, #2e7d32) 45%, transparent);
-  background: color-mix(in srgb, var(--ok, #2e7d32) 10%, transparent); }
-.sk-compat.is-warn { color: var(--warn, #b26a00); border-color: color-mix(in srgb, var(--warn, #b26a00) 45%, transparent);
-  background: color-mix(in srgb, var(--warn, #b26a00) 10%, transparent); cursor: pointer; }
+.sk-compat.is-ok { color: var(--green-text, var(--green)); border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: color-mix(in srgb, var(--green) 10%, transparent); }
+.sk-compat.is-warn { color: var(--warning-text, var(--warning)); border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent); cursor: pointer; }
 .sk-compat.sm { font-size: 11px; padding: 1px 8px; cursor: inherit; }
 .sk-caveats { flex: 0 0 auto; margin: 10px 16px 0; padding: 9px 12px 9px 28px; border-radius: 10px;
   font-size: 13px; line-height: 1.5;
-  border: 1px solid color-mix(in srgb, var(--warn, #b26a00) 35%, var(--border)); color: var(--muted);
-  background: color-mix(in srgb, var(--warn, #b26a00) 6%, transparent); }
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); color: var(--muted);
+  background: color-mix(in srgb, var(--warning) 6%, transparent); }
 .sk-caveats li { margin: 3px 0; }
 /* variant for panels living inside the reading column (installed-skill detail) */
 .sk-caveats.in-page { width: calc(100% - 36px); max-width: 684px; margin: 12px auto 0; box-sizing: border-box; }
@@ -330,8 +330,8 @@ const CSS = `
   gap: 8px; flex-wrap: wrap; word-break: break-word; }
 .sk-carddesc { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
 .sk-cardbtns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.sk-btn { min-height: 44px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--accent);
-  background: var(--accent); color: var(--accent-fg, #fff); font-family: var(--font); font-size: 13.5px;
+.sk-btn { min-height: 44px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--accent-fill, var(--accent));
+  background: var(--accent-fill, var(--accent)); color: var(--accent-fg); font-family: var(--font); font-size: 13.5px;
   font-weight: 600; cursor: pointer; }
 .sk-btn:disabled { opacity: 0.5; cursor: default; }
 .sk-btn.ghost { background: none; color: var(--accent); text-decoration: none; display: inline-flex;
